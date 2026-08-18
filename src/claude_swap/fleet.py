@@ -118,21 +118,87 @@ def segment_for(
     )
 
 
-def order_segments(segments: Sequence[FleetSegment]) -> list[FleetSegment]:
-    """Soonest deadline leftmost — the order the quota should be spent in.
+def window_segment(
+    *,
+    number: str,
+    email: str,
+    alias: str,
+    usage: dict | None,
+    label: str,
+    models: Sequence[str],
+    now: float,
+    is_active: bool,
+) -> FleetSegment | None:
+    """One account's stake in ONE named window (``5h`` / ``7d`` / a model name).
 
-    Unknown deadlines sort last: an account nobody can schedule around is not
-    urgent, and putting it first would push a real deadline off the eye's
-    starting point. Ties break on account number so the bar does not reshuffle
-    between repaints when two windows share a reset instant.
+    ``None`` when the account does not report that window at all, so a fleet
+    where one account lacks a per-model limit draws a shorter bar rather than
+    a phantom empty segment.
+
+    ``blocked`` here means *this window* is spent, which is narrower than the
+    account-wide sense used by :func:`segment_for`: on the session bar an
+    account with no 5-hour headroom is genuinely unusable right now, while on
+    the weekly bar the same account may still have a week's quota intact.
     """
-    return sorted(
+    for name, pct, resets_at in oauth.relevant_windows(usage, models):
+        if name != label:
+            continue
+        return FleetSegment(
+            number=number,
+            label=alias or email.split("@", 1)[0],
+            email=email,
+            headroom_pct=max(0.0, 100.0 - pct),
+            reset_ts=parse_reset_ts(resets_at),
+            risk=waste_risk(usage, models, now),
+            is_active=is_active,
+            blocked=pct >= 100.0,
+            unknown=False,
+        )
+    return None
+
+
+def order_segments(
+    segments: Sequence[FleetSegment], *, spend_first_last: bool = False
+) -> list[FleetSegment]:
+    """Consumption order: soonest deadline first.
+
+    Unknown deadlines sort last either way: an account nobody can schedule
+    around is not urgent, and letting it lead would push a real deadline off
+    the eye's starting point. Ties break on account number so the bar does not
+    reshuffle between repaints when two windows share a reset instant.
+
+    ``spend_first_last`` reverses the sequence for the BAR, which is drawn as a
+    fuel gauge: a gauge is consumed from its right edge, so the segment being
+    spent now belongs there and the bar shortens leftward as quota is used.
+    Kept as a display flag on one function rather than two orderings, so the
+    list and the gauge can never disagree about which account is next.
+    """
+    ordered = sorted(
         segments,
         key=lambda s: (
             s.reset_ts if s.reset_ts is not None else float("inf"),
             int(s.number),
         ),
     )
+    return list(reversed(ordered)) if spend_first_last else ordered
+
+
+def burn_head(segments: Sequence[FleetSegment]) -> FleetSegment | None:
+    """The segment quota should be coming out of right now.
+
+    The most urgent account that is actually REACHABLE — urgency alone would
+    point at an account whose short-term window is spent, which is advice
+    nobody can act on. Returns ``None`` when every account holding perishable
+    quota is blocked.
+
+    Deliberately distinct from "the active account": when the two differ, the
+    gauge is showing that quota is being drawn from the wrong place, which is
+    precisely the condition the waste-first strategy exists to correct.
+    """
+    for segment in order_segments(segments):
+        if segment.headroom_pct > 0 and not segment.blocked:
+            return segment
+    return None
 
 
 def segment_widths(segments: Sequence[FleetSegment], width: int) -> list[int]:

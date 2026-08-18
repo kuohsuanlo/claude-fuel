@@ -63,6 +63,13 @@ class AutoSwitchSettings:
     # on, the effective trigger is the lower of `threshold` and the value the
     # current rate can survive — which is what makes a 99% threshold usable.
     burst_guard: bool = True
+    # Per-account plan size, as ``num=multiplier`` pairs (e.g. "1=20,2=5").
+    # The usage API reports only PERCENTAGES, so 40% of a 20x plan and 40% of
+    # a 5x plan are indistinguishable to it while being four times apart in
+    # real work. Anything drawing accounts side by side has to weight them or
+    # it is comparing different units. Unset accounts fall back to their
+    # measured tokens-per-percent, and to 1.0 before that is known.
+    account_weights: str | None = None
     include_api_key_accounts: bool = False
     unhealthy_ticks: int = 3
     # Comma-separated model display name(s) (e.g. "Fable" or "Fable,Opus"),
@@ -139,6 +146,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
             help="How auto-switch picks the target account",
         ),
         SettingSpec(
+            "autoswitch", "accountWeights", "account_weights", "string",
+            help="Relative plan size per account, e.g. 1=20,2=5,3=5",
+        ),
+        SettingSpec(
             "autoswitch", "burstGuard", "burst_guard", "bool",
             help="Let the measured burn rate trigger a switch before the threshold",
         ),
@@ -170,6 +181,31 @@ _AUTOSWITCH_KEYS: dict[str, str] = {
 
 def settings_path(backup_root: Path) -> Path:
     return backup_root / SETTINGS_FILENAME
+
+
+def parse_account_weights(value: str | None) -> dict[str, float]:
+    """``"1=20,2=5"`` → ``{"1": 20.0, "2": 5.0}``; malformed pairs are skipped.
+
+    Forgiving because this is hand-typed configuration whose only consumer is
+    a drawing: one fat-fingered pair should cost that account its weight, not
+    the whole setting. Non-positive values are dropped too — a zero-width
+    account would silently vanish from every bar.
+    """
+    out: dict[str, float] = {}
+    if not value:
+        return out
+    for pair in value.split(","):
+        number, _, weight = pair.partition("=")
+        number, weight = number.strip(), weight.strip()
+        if not number or not weight:
+            continue
+        try:
+            parsed = float(weight)
+        except ValueError:
+            continue
+        if parsed > 0:
+            out[number] = parsed
+    return out
 
 
 def parse_model_names(value: str | None) -> tuple[str, ...]:
@@ -449,6 +485,7 @@ def merged_with_cli(settings: AutoSwitchSettings, args) -> AutoSwitchSettings:
         ("cooldown", "cooldown_seconds"),
         ("include_api_key_accounts", "include_api_key_accounts"),
         ("burst_guard", "burst_guard"),
+        ("account_weights", "account_weights"),
         ("model", "model"),
         ("strategy", "strategy"),
     ):

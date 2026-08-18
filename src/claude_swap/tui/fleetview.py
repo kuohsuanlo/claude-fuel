@@ -34,7 +34,12 @@ from claude_swap import fleet, oauth
 from claude_swap.autoswitch import AutoSwitchEngine, AutoSwitchEvent, pct_label
 from claude_swap.burn import BurnTracker, TranscriptBurnSensor
 from claude_swap.models import AccountsSnapshot
-from claude_swap.settings import SETTING_SPECS, load_settings, save_settings
+from claude_swap.settings import (
+    SETTING_SPECS,
+    load_settings,
+    parse_account_weights,
+    save_settings,
+)
 from claude_swap.tui.autoview import event_text
 from claude_swap.tui.modals import ConfirmModal
 from claude_swap.tui.theme import Palette
@@ -52,26 +57,47 @@ DISPLAY_INTERVAL_S = 1.0
 # further out can be rescued by tomorrow's session.
 AT_RISK_HORIZON_S = 24 * 3600.0
 
-_FILLED = "█"
-_HATCHED = "▓"  # holds quota, but its short-term window is spent
+# The house glyph vocabulary, shared with widgets.bar_cells so the fleet bars
+# and the per-window bars on the dashboard read as the same instrument. Solid
+# blocks were tried first and clashed badly: cswap's whole visual register is
+# thin lines.
+_FILLED = "━"
+_BLOCKED = "╌"  # quota is there, but this window is spent — cannot draw on it
+_CAP = "╸"  # half-width end cap: where one account's fuel stops
 _EMPTY = "─"
-# Segment joins are drawn, not merely colored. Color alone carries the whole
-# structure only for a reader with a color terminal and normal color vision;
-# a drawn boundary keeps the bar legible in a pipe, a screenshot, or a
-# monochrome scrollback, and it is what makes the shape read as "these are
-# separate accounts" rather than one gradient.
-_JOIN = "│"
+# Segment joins are DRAWN, not merely colored. Color alone carries the whole
+# structure only for a reader with a colour terminal and normal colour vision;
+# a drawn boundary survives a pipe, a screenshot, and a monochrome scrollback.
+_JOIN = "┃"
+
+# The three windows drawn as bars, in the order a person thinks about them:
+# what stops me in the next few hours, what stops me this week, and what stops
+# the model I actually use. `None` means "whatever per-model windows the
+# accounts report", resolved at render time.
+_BAR_ROWS: tuple[tuple[str, str | None], ...] = (
+    ("session", "5h"),
+    ("weekly", "7d"),
+    ("model", None),
+)
+
+# Bar width follows the dashboard's own rule (widgets.account_card_text):
+# capped, never spanning the terminal. A gauge that grows with the window
+# stops being comparable between glances.
+_BAR_MIN = 12
+_BAR_MAX = 36
 
 
 class FleetScreen(Screen):
     """The single-screen fleet view."""
 
     BINDINGS = [
-        Binding("a", "toggle_armed", "Arm / disarm"),
+        Binding("a", "toggle_armed", "Auto on / off"),
+        Binding("up", "select(-1)", "Pick account"),
+        Binding("down", "select(1)", "Pick account"),
         Binding("t", "adjust_threshold", "Threshold"),
         Binding("left", "threshold_step(-1)", "-1%"),
         Binding("right", "threshold_step(1)", "+1%"),
-        Binding("enter", "adjust_done", "Done"),
+        Binding("enter", "confirm", "Confirm"),
         Binding("r", "apply_recommended", "Use suggested"),
         Binding("f", "app.refresh_full", "Refresh usage"),
         Binding("q", "app.quit", "Quit"),
@@ -83,7 +109,12 @@ class FleetScreen(Screen):
         super().__init__()
         self._engine: AutoSwitchEngine | None = None
         self._settings = None
-        self._armed = False
+        # ARMED BY DEFAULT. The command exists to stop quota being wasted, and
+        # a gauge that watches it happen without acting is not that tool. `a`
+        # turns it off, and turning it off is what hands the arrow keys over
+        # to manual selection — the two modes cannot fight over the account.
+        self._armed = True
+        self._selected: int | None = None
         self._adjusting = False
         self._sensor: TranscriptBurnSensor | None = None
         self._tracker: BurnTracker | None = None
@@ -91,11 +122,15 @@ class FleetScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical(id="fleet-top"):
             yield Static("", id="fleet-headline")
-            yield Static("", id="fleet-bar")
-            yield Static("", id="fleet-legend")
+            yield Static("", id="fleet-bars")
             yield Static("", id="fleet-burn")
             yield Static("", id="fleet-accounts")
-        yield RichLog(id="fleet-log", highlight=False, markup=False, wrap=True)
+        log = RichLog(id="fleet-log", highlight=False, markup=False, wrap=True)
+        # Not focusable: a focused RichLog eats the arrow keys to scroll
+        # itself, and on this screen the arrows are how an account is picked.
+        # The log is a passive readout — nothing here needs to type into it.
+        log.can_focus = False
+        yield log
         yield Footer()
 
     # -- lifecycle ----------------------------------------------------------
@@ -221,41 +256,74 @@ class FleetScreen(Screen):
     # -- actions ------------------------------------------------------------
 
     def action_toggle_armed(self) -> None:
-        if self._armed:
-            self._set_armed(False)
-            return
-        self.app.push_screen(
-            ConfirmModal(
-                "Arm auto-switch? claude-swap will change your active account "
-                "on its own when quota is about to expire or run out.\n\n"
-                "The display keeps working either way.",
-                title="Arm auto-switch",
-                yes_label="Arm",
-            ),
-            lambda confirmed: self._set_armed(True) if confirmed else None,
-        )
+        self._set_armed(not self._armed)
 
     def _set_armed(self, armed: bool) -> None:
         self._armed = armed
+        # Selection belongs to manual mode only: leaving a cursor visible
+        # while the engine is free to switch would show a choice the next
+        # tick can overrule.
+        self._selected = None if armed else self._active_index()
+        # check_action gates the arrow keys on `_armed`, and Textual caches
+        # that verdict until asked to re-evaluate. Without this the keys stay
+        # disabled for the rest of the session after the very first toggle.
+        self.refresh_bindings()
         if self._engine is not None:
             self._engine.stop()
         self._start_engine()
         self._log_note("auto-switch ARMED" if armed else "auto-switch disarmed")
         self._display_tick()
 
+    def _active_index(self) -> int | None:
+        snapshot = self.app.snapshot
+        if snapshot is None:
+            return None
+        for index, account in enumerate(snapshot.accounts):
+            if account.is_active:
+                return index
+        return 0 if snapshot.accounts else None
+
+    def action_select(self, delta: int) -> None:
+        """Move the account cursor. Manual mode only — see `_set_armed`."""
+        snapshot = self.app.snapshot
+        if self._armed or snapshot is None or not snapshot.accounts:
+            return
+        if self._selected is None:
+            self._selected = self._active_index() or 0
+        self._selected = (self._selected + delta) % len(snapshot.accounts)
+        self._display_tick()
+
+    def action_confirm(self) -> None:
+        """Enter: finish a threshold edit, else switch to the picked account."""
+        if self._adjusting:
+            self._adjusting = False
+            self.refresh_bindings()
+            self._display_tick()
+            return
+        snapshot = self.app.snapshot
+        if self._armed or self._selected is None or snapshot is None:
+            return
+        try:
+            account = snapshot.accounts[self._selected]
+        except IndexError:
+            return
+        if account.is_active:
+            self._log_note(f"already on account {account.number}")
+            return
+        self._log_note(f"switching to account {account.number}")
+        self.app.do_switch(account.number)
+
     def action_adjust_threshold(self) -> None:
         self._adjusting = not self._adjusting
         self.refresh_bindings()
         self._display_tick()
 
-    def action_adjust_done(self) -> None:
-        if self._adjusting:
-            self._adjusting = False
-            self.refresh_bindings()
-            self._display_tick()
-
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        if action in ("threshold_step", "adjust_done") and not self._adjusting:
+        if action == "threshold_step" and not self._adjusting:
+            return False
+        if action == "select" and self._armed:
+            # Hidden while the engine owns the account, so the footer never
+            # advertises a key that would do nothing.
             return False
         return True
 
@@ -340,8 +408,7 @@ class FleetScreen(Screen):
         palette = Palette.from_theme(self.app.current_theme)
         segments = self._segments(now)
         self._render_headline(segments, now, palette)
-        self._render_bar(segments, palette)
-        self._render_legend(segments, now, palette)
+        self._render_bars(segments, now, palette)
         self._render_burn(palette)
         self._render_accounts(segments, now, palette)
 
@@ -356,19 +423,22 @@ class FleetScreen(Screen):
     def _render_headline(
         self, segments: list[fleet.FleetSegment], now: float, palette: Palette
     ) -> None:
-        text = Text()
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append("All fuel", style=f"bold {palette.foreground}")
+        text.append("    ")
         at_risk = fleet.total_at_risk(segments, now, AT_RISK_HORIZON_S)
         if at_risk > 0:
-            text.append(f"{at_risk:.0f} points expire within 24h", style=palette.sev_crit)
+            text.append(f"{at_risk:.0f} pts expire within 24h", style=palette.sev_crit)
         elif segments:
             text.append("nothing expiring within 24h", style=palette.sev_ok)
         else:
             text.append("no readable accounts", style=palette.muted)
         text.append("   ")
         if self._armed:
-            text.append(" AUTO ON ", style=f"bold {palette.accent} reverse")
+            text.append(" AUTO ", style=f"bold {palette.accent} reverse")
         else:
-            text.append(" AUTO OFF ", style=f"{palette.muted} reverse")
+            text.append(" MANUAL ", style=f"{palette.muted} reverse")
+            text.append("  ↑↓ pick · enter switch", style=palette.muted)
         if self._settings is not None:
             text.append("   switch at ", style=palette.muted)
             text.append(
@@ -380,110 +450,249 @@ class FleetScreen(Screen):
         self.query_one("#fleet-headline", Static).update(text)
 
     def _bar_width(self) -> int:
-        # Two cells of padding keep the bar off the frame at every terminal
-        # size; the floor stops the geometry being asked for a negative width
-        # mid-resize, which Textual can transiently report.
-        return max(10, self.size.width - 2)
+        """Bounded, like every bar in this tool.
 
-    def _render_bar(
-        self, segments: list[fleet.FleetSegment], palette: Palette
-    ) -> None:
-        width = self._bar_width()
-        widths = fleet.segment_widths(segments, width)
-        text = Text()
-        drawn = 0
-        for segment, cells in zip(segments, widths):
-            if cells <= 0:
-                continue
-            style = self._tier_style(segment, palette)
-            glyph = _HATCHED if segment.blocked else _FILLED
-            # The join replaces the segment's first cell rather than adding
-            # one, so the bar's total width stays exactly what the geometry
-            # computed and the legend below still lines up with it.
-            if drawn:
-                text.append(_JOIN, style=style)
-                cells -= 1
-            if cells > 0:
-                text.append(glyph * cells, style=style)
-            drawn += 1
-        if not text.plain:
-            text.append(_EMPTY * width, style=palette.track)
-        self.query_one("#fleet-bar", Static).update(text)
+        ``widgets.account_card_text`` caps its window bars the same way. A
+        gauge that grows with the terminal cannot be compared between two
+        glances at different window sizes.
+        """
+        return max(_BAR_MIN, min(_BAR_MAX, self.size.width - 46))
 
     @staticmethod
-    def _legend_label(segment: fleet.FleetSegment, cells: int, now: float) -> str:
-        """The most informative label that fits in ``cells``.
+    def _rank_colours(count: int, palette: Palette) -> list[str]:
+        """Red → amber → green across ``count`` accounts, soonest expiry first.
 
-        A narrow segment used to get NO label, which is the worst outcome
-        available: a small stake is exactly the one whose deadline a reader
-        cannot infer from the picture, and it is often the one expiring first.
-        So the label degrades instead of vanishing, and it degrades toward the
-        DEADLINE rather than the name — an unlabelled account is still
-        identifiable by position and color, while an unlabelled deadline is
-        simply lost.
+        Colour carries the DEADLINE RANK here, not the utilization severity it
+        carries everywhere else in the tool. The bar's whole job is "which of
+        these dies first", and rank is the only encoding that stays legible
+        when two accounts have similar percentages but a week between their
+        resets. Interpolated rather than a fixed triple so a fleet of six
+        still gets six distinguishable steps of the same ramp.
         """
-        marker = "▲ " if segment.is_active else ""
-        countdown = segment.countdown_text(now)
-        date = segment.deadline_text
-        candidates = [
-            f"{marker}{segment.label} {date}" + (f" ({countdown})" if countdown else ""),
-            f"{marker}{segment.label} {countdown}" if countdown else "",
-            f"{marker}{date}",
-            f"{marker}{countdown}" if countdown else "",
-            marker.strip(),
-        ]
-        # One cell is reserved so a label can never touch the next segment's
-        # label: "dev4 5d▲ dev" reads as one token and silently reassigns a
-        # deadline to the wrong account.
-        room = cells - 1
-        for candidate in candidates:
-            if candidate and len(candidate) <= room:
-                return candidate
-        return ""
+        def _rgb(value: str) -> tuple[int, int, int]:
+            value = value.lstrip("#")
+            return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore
 
-    def _render_legend(
+        stops = [_rgb(palette.sev_crit), _rgb(palette.sev_warn), _rgb(palette.sev_ok)]
+        if count <= 1:
+            return [palette.sev_crit]
+        out: list[str] = []
+        for index in range(count):
+            position = index / (count - 1) * (len(stops) - 1)
+            low = min(int(position), len(stops) - 2)
+            frac = position - low
+            channels = [
+                round(stops[low][c] + (stops[low + 1][c] - stops[low][c]) * frac)
+                for c in range(3)
+            ]
+            out.append("#%02x%02x%02x" % tuple(channels))
+        return out
+
+    def _window_segments(self, label: str, now: float) -> list[fleet.FleetSegment]:
+        snapshot = self.app.snapshot
+        if snapshot is None:
+            return []
+        built = [
+            fleet.window_segment(
+                number=account.number, email=account.email, alias=account.alias,
+                usage=account.usage.last_good, label=label,
+                models=("all",),  # the model row needs scoped windows regardless
+                now=now, is_active=account.is_active,
+            )
+            for account in snapshot.accounts
+            if account.kind != "api_key"
+        ]
+        return [segment for segment in built if segment is not None]
+
+    def _model_label(self) -> str | None:
+        """The per-model window's own name (``Fable``), read from the data."""
+        snapshot = self.app.snapshot
+        if snapshot is None:
+            return None
+        for account in snapshot.accounts:
+            scoped = (account.usage.last_good or {}).get("scoped")
+            if isinstance(scoped, list):
+                for window in scoped:
+                    if isinstance(window, dict) and isinstance(window.get("name"), str):
+                        return window["name"]
+        return None
+
+    def _account_weights(self, row: list[fleet.FleetSegment]) -> list[float]:
+        """Relative plan size per account, so the bars compare like with like.
+
+        Three sources, most-trusted first:
+
+        CONFIGURED (``autoswitch.accountWeights``). Only the user knows they
+        bought a 20x and a 5x, and the usage API will never say — it reports
+        utilization, and 40% of either plan is the same number.
+
+        MEASURED. The burn calibration already answers this as a side effect:
+        percent-per-token is small exactly in proportion to how large the
+        plan's window is, so its reciprocal is the account's capacity in
+        tokens and the ratio between accounts is the multiplier. Free, and it
+        self-corrects if a plan changes.
+
+        EQUAL. Before either is available. Wrong for a mixed fleet, but
+        visibly wrong in a way the reader can correct, unlike a confident
+        weighting derived from nothing.
+        """
+        configured = parse_account_weights(
+            self._settings.account_weights if self._settings else None
+        )
+        weights: list[float] = []
+        measured: dict[str, float] = {}
+        if self._tracker is not None:
+            for segment in row:
+                k = self._tracker.pct_per_token(segment.number)
+                if k and k > 0:
+                    measured[segment.number] = 1.0 / k
+        floor = min(measured.values()) if measured else None
+        for segment in row:
+            if segment.number in configured:
+                weights.append(configured[segment.number])
+            elif segment.number in measured and floor:
+                weights.append(measured[segment.number] / floor)
+            else:
+                weights.append(1.0)
+        return weights
+
+    def _render_bars(
         self, segments: list[fleet.FleetSegment], now: float, palette: Palette
     ) -> None:
-        """Deadlines written UNDER their own segment, aligned to its start.
+        """Three fuel gauges — 5h, 7d, and the per-model weekly window.
 
-        Placing each label at its segment's left edge is what makes the bar
-        readable as a timeline of expiries rather than a stack of colors: the
-        eye reads left to right and finds "8/19 · 20h" exactly where that
-        account's quota begins. A label that would overrun the next segment's
-        start is dropped rather than shifted — a misaligned date is worse than
-        an absent one, because it silently reassigns quota to the wrong
-        deadline.
+        WHAT IS LEFT IS PACKED TO THE LEFT. Every account contributes an equal
+        slice of the bar, but the slices are drawn in two runs: all the
+        remaining quota first, contiguous, then all the spent quota as track.
+        So the length of the coloured run IS the fleet's remaining fuel for
+        that window, readable without counting segments, while the per-account
+        boundaries stay visible inside it.
+
+        Ordered latest deadline → soonest, so the account that dies first sits
+        at the right-hand edge of the coloured run: the point consumption eats
+        into next. ``▲`` names it underneath.
         """
-        width = self._bar_width()
-        widths = fleet.segment_widths(segments, width)
-        line = [" "] * width
-        styles: list[tuple[int, int, str]] = []
-        cursor = 0
-        for segment, cells in zip(segments, widths):
-            if cells <= 0:
+        rows: list[tuple[str, list[fleet.FleetSegment]]] = []
+        model = self._model_label()
+        for title, window in _BAR_ROWS:
+            label = window or model
+            if label is None:
                 continue
-            label = self._legend_label(segment, cells, now)
-            if label and cursor + len(label) <= width:
-                for offset, char in enumerate(label):
-                    line[cursor + offset] = char
-                styles.append(
-                    (cursor, cursor + len(label), self._tier_style(segment, palette))
+            row = self._window_segments(label, now)
+            if row:
+                rows.append((label, row))
+        if not rows:
+            self.query_one("#fleet-bars", Static).update(
+                Text("  measuring…", style=palette.muted)
+            )
+            return
+
+        width = self._bar_width()
+        text = Text(no_wrap=True, overflow="ellipsis")
+        label_width = max(len(label) for label, _ in rows)
+        for index, (label, row) in enumerate(rows):
+            # Latest deadline first, soonest last: the soonest lands at the
+            # right edge of the coloured run.
+            row = sorted(
+                row,
+                key=lambda s: (
+                    -(s.reset_ts if s.reset_ts is not None else 0.0), int(s.number)
+                ),
+            )
+            colours = list(reversed(self._rank_colours(len(row), palette)))
+            if index:
+                text.append("\n")
+            text.append(f"  {label:<{label_width}}  ", style=palette.muted)
+            filled, spent, marker_col = self._gauge(
+                row, colours, width, self._account_weights(row)
+            )
+            text.append(filled)
+            text.append(spent)
+            text.append("  ")
+            for position, (segment, colour) in enumerate(zip(row, colours)):
+                if position:
+                    text.append(" · ", style=palette.track)
+                text.append(f"{segment.number} ", style=palette.muted)
+                text.append(f"{100 - segment.headroom_pct:.0f}%", style=colour)
+                countdown = segment.countdown_text(now)
+                if countdown:
+                    text.append(f" {countdown}", style=palette.muted)
+            soonest = row[-1] if row else None
+            if soonest is not None:
+                text.append("\n")
+                text.append(" " * (4 + label_width + marker_col))
+                text.append("▲ ", style=colours[-1])
+                text.append(soonest.label, style=colours[-1])
+                clock = soonest.countdown_text(now)
+                text.append(
+                    f" {soonest.deadline_text}" + (f" ({clock})" if clock else ""),
+                    style=palette.muted,
                 )
-            cursor += cells
-        text = Text("".join(line).rstrip())
-        for start, end, style in styles:
-            if start < len(text.plain):
-                text.stylize(style, start, min(end, len(text.plain)))
-        self.query_one("#fleet-legend", Static).update(text)
+        self.query_one("#fleet-bars", Static).update(text)
+
+    def _gauge(
+        self,
+        row: list[fleet.FleetSegment],
+        colours: list[str],
+        width: int,
+        weights: list[float],
+    ) -> tuple[Text, Text, int]:
+        """``(remaining run, spent run, column of the last remaining cell)``.
+
+        Each account's slice is proportional to its PLAN SIZE, not to the
+        number of accounts. Percentages are relative to their own plan, so
+        equal slices would draw a 20x account's last 10% the same width as a
+        5x account's — four times the real work, identical on screen. With the
+        weighting, one cell means one amount of work everywhere on the row.
+
+        A segment with anything left never rounds away to nothing: an account
+        holding two points is exactly the one whose deadline matters, and an
+        invisible segment reads as "that account is empty".
+        """
+        palette = Palette.from_theme(self.app.current_theme)
+        total_weight = sum(weights) or float(max(1, len(row)))
+        filled = Text()
+        spent = Text()
+        marker_col = 0
+        for segment, colour, weight in zip(row, colours, weights):
+            share = max(2, round(width * weight / total_weight))
+            keep = segment.headroom_pct / 100.0 * share
+            cells = min(share, max(1, round(keep))) if segment.headroom_pct > 0 else 0
+            if cells:
+                # A spent short-term window still owns its quota; drawn dashed
+                # so "cannot reach it yet" never reads as "does not have it".
+                glyph = _BLOCKED if segment.blocked else _FILLED
+                # Each account's run is CAPPED with the half-width glyph, so
+                # the boundary survives without colour: packed left, the runs
+                # are otherwise one unbroken line and a reader cannot tell
+                # three accounts from one long one.
+                filled.append(glyph * (cells - 1), style=colour)
+                filled.append(_CAP if not segment.blocked else glyph, style=colour)
+                marker_col = len(filled.plain) - 1
+            rest = share - cells
+            if rest > 0:
+                if spent.plain:
+                    spent.append(" ")
+                spent.append(_EMPTY * rest, style=palette.track)
+        if spent.plain:
+            spent = Text(" ") + spent
+        return filled, spent, marker_col
 
     def _render_burn(self, palette: Palette) -> None:
+        """How fast quota is going, and whether that is fast enough.
+
+        The gauges show what is at stake; this says whether the current rate
+        will actually finish the quota that dies first. Those two together are
+        the whole question — "am I going to lose some of this?" — and neither
+        answers it alone.
+        """
         estimate = self._estimate()
-        text = Text()
+        text = Text(no_wrap=True, overflow="ellipsis")
         text.append("burn  ", style=palette.muted)
         if estimate is None or estimate.pct_per_s is None:
             # Percent needs two API samples bracketing local spend; tokens do
             # not. Showing the token rate meanwhile proves the instrument is
-            # alive and says what it is waiting for — an indefinite
+            # alive and names what it is waiting for — an indefinite
             # "measuring…" reads as a hang.
             if estimate is not None and estimate.tokens_per_s > 0:
                 text.append(
@@ -498,11 +707,16 @@ class FleetScreen(Screen):
             self.query_one("#fleet-burn", Static).update(text)
             return
         rate = estimate.pct_per_s
-        text.append(f"{rate * 100:.2f}%/100s", style=palette.foreground)
         seconds_per_pct = estimate.seconds_per_pct
         if seconds_per_pct is None:
-            text.append("  idle", style=palette.sev_ok)
+            # A zero rate is a measurement, not a gap. Saying "idle" beats
+            # printing 0.000%/s, which reads as a broken instrument.
+            text.append("idle", style=palette.sev_ok)
         else:
+            # BOTH units: the rate is what the threshold maths runs on, while
+            # "1% every 21s" is the one a person can hold against how long
+            # their next turn will take.
+            text.append(f"{rate:.3f}%/s", style=palette.foreground)
             text.append(f"  ·  1% every {seconds_per_pct:.0f}s", style=palette.muted)
         text.append(
             "  ·  " + ("calibrated" if estimate.calibrated else "API average"),
@@ -510,7 +724,7 @@ class FleetScreen(Screen):
         )
         recommended = estimate.recommended_threshold()
         if recommended is not None and self._settings is not None:
-            text.append("     suggested threshold ", style=palette.muted)
+            text.append("   suggested ", style=palette.muted)
             good = recommended >= self._settings.threshold
             text.append(
                 f"{pct_label(recommended)}%",
@@ -518,63 +732,140 @@ class FleetScreen(Screen):
             )
             if not good:
                 text.append(
-                    f" (yours is {pct_label(self._settings.threshold)}% — press r)",
+                    f" (yours {pct_label(self._settings.threshold)}% — press r)",
                     style=palette.sev_warn,
                 )
+        waste = self._waste_note(rate, palette)
+        if waste is not None:
+            text.append("\n      ")
+            text.append(waste)
         self.query_one("#fleet-burn", Static).update(text)
+
+    def _waste_note(self, rate_pct_per_s: float, palette: Palette) -> Text | None:
+        """Whether the current rate can finish the soonest-expiring quota.
+
+        Silent when nothing is expiring or the rate is zero: a confident "you
+        will waste nothing" derived from an idle minute is worse than saying
+        nothing, because it is exactly the moment before a heavy turn starts.
+        """
+        now = time.time()
+        segments = [s for s in self._segments(now) if s.reset_ts is not None]
+        if not segments or rate_pct_per_s <= 0:
+            return None
+        soonest = min(segments, key=lambda s: s.reset_ts or float("inf"))
+        hours = ((soonest.reset_ts or now) - now) / 3600.0
+        if hours <= 0 or soonest.headroom_pct <= 0:
+            return None
+        spendable = rate_pct_per_s * 3600.0 * hours
+        text = Text(no_wrap=True, overflow="ellipsis")
+        if spendable >= soonest.headroom_pct:
+            text.append(
+                f"{soonest.label}'s {soonest.headroom_pct:.0f} pts are all "
+                "spendable before they expire",
+                style=palette.sev_ok,
+            )
+        else:
+            text.append(
+                f"at this rate {soonest.label} wastes "
+                f"{soonest.headroom_pct - spendable:.0f} of its "
+                f"{soonest.headroom_pct:.0f} pts",
+                style=palette.sev_warn,
+            )
+        return text
 
     def _render_accounts(
         self, segments: list[fleet.FleetSegment], now: float, palette: Palette
     ) -> None:
-        """One line per account: the three windows collapsed to what binds.
+        """The account list, in `cswap list`'s own format.
 
-        Reading a fleet used to mean holding three percentages per account in
-        your head. What actually decides anything is the worst one, so that is
-        what each row leads with; the rest is the deadline the bar above is
-        drawn from.
+        Deliberately not a new layout: this block answers "tell me everything
+        about account 2", and a reader who already knows that shape from the
+        CLI should not have to learn a second one. The lines come from the
+        same formatter the CLI prints, so the two can never drift.
         """
+        from claude_swap.switcher import _format_usage_lines
+
         snapshot = self.app.snapshot
+        target = self.query_one("#fleet-accounts", Static)
         if snapshot is None:
-            self.query_one("#fleet-accounts", Static).update(
-                Text("loading…", style=palette.muted)
-            )
+            target.update(Text("loading…", style=palette.muted))
             return
-        models = self._models()
-        by_number = {account.number: account for account in snapshot.accounts}
-        text = Text()
-        for segment in segments:
-            account = by_number.get(segment.number)
-            if account is None:
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append("Accounts:", style=f"bold {palette.foreground}")
+        for index, account in enumerate(snapshot.accounts):
+            # Blank line between accounts, exactly as `cswap list` prints it:
+            # three windows per account run together into an unreadable block
+            # without it.
+            text.append("\n\n" if index else "\n")
+            cursor = (
+                not self._armed
+                and self._selected is not None
+                and index == self._selected
+            )
+            text.append("  ")
+            text.append(
+                f"{account.number}: ",
+                style=f"bold {palette.accent}" if cursor else palette.foreground,
+            )
+            text.append(account.email, style=palette.foreground)
+            text.append(f" [{account.display_tag}]", style=palette.muted)
+            if account.is_active:
+                text.append("  (active)", style=f"bold {palette.accent}")
+            if cursor and not account.is_active:
+                text.append("   ← enter to switch", style=palette.accent)
+            elif cursor:
+                text.append("   ← you are here", style=palette.muted)
+            lines = (
+                _format_usage_lines(account.usage.last_good, account.usage.fetched_at)
+                if account.usage.last_good
+                else []
+            )
+            if not lines:
+                text.append("\n     ")
+                text.append("usage unavailable", style=palette.muted)
                 continue
-            headroom = oauth.account_headroom(account.usage.last_good, models)
-            marker = "▸" if segment.is_active else " "
-            text.append(f"{marker}{segment.number} ", style=palette.accent
-                        if segment.is_active else palette.muted)
-            text.append(f"{account.email:<28.28} ", style=palette.foreground)
-            if headroom is None:
-                text.append("usage unknown", style=palette.muted)
-            else:
-                used = 100.0 - headroom
-                text.append(f"{used:3.0f}% used", style=palette.severity(used))
-                # WHICH window is at that number. "90% used" on the 5-hour
-                # window means blocked for a few hours; the same figure on the
-                # weekly means blocked for days. Collapsing three windows to
-                # one number is only safe if the number says which one it is.
-                windows = oauth.relevant_windows(account.usage.last_good, models)
-                if windows:
-                    binding = max(windows, key=lambda w: w[1])
-                    text.append(f" ({binding[0]})", style=palette.muted)
+            for position, line in enumerate(lines):
+                text.append("\n     ")
                 text.append(
-                    f"   {segment.headroom_pct:3.0f} pts expire "
-                    f"{segment.deadline_text}",
-                    style=palette.muted,
+                    ("└ " if position == len(lines) - 1 else "├ "), style=palette.track
                 )
-                countdown = segment.countdown_text(now)
-                if countdown:
-                    text.append(f" ({countdown})", style=self._tier_style(
-                        segment, palette))
-                if segment.blocked:
-                    text.append("  · blocked until its window resets",
-                                style=palette.sev_warn)
-            text.append("\n")
-        self.query_one("#fleet-accounts", Static).update(text)
+                text.append(line, style=palette.muted)
+        self._append_running_instances(text, palette)
+        target.update(text)
+
+    @staticmethod
+    def _append_running_instances(text: Text, palette: Palette) -> None:
+        """Which sessions are sharing the account, grouped as `cswap list` does.
+
+        Load-bearing rather than decorative: every one of these is spending
+        the SAME active account, so "switch" means switching all of them at
+        once. A reader deciding whether to arm the engine needs to know how
+        many things that would move.
+        """
+        try:
+            from claude_swap.printer import abbreviate_path, entrypoint_label
+            from claude_swap.process_detection import get_running_instances
+
+            sessions, ides = get_running_instances()
+        except Exception:
+            return  # process inspection is best-effort; never break the view
+        groups: dict[tuple[str, str], int] = {}
+        for session in sessions:
+            key = (entrypoint_label(session.entrypoint), abbreviate_path(session.cwd))
+            groups[key] = groups.get(key, 0) + 1
+        for ide in ides:
+            for folder in getattr(ide, "workspace_folders", []) or []:
+                key = (getattr(ide, "ide_name", "IDE"), abbreviate_path(folder))
+                groups[key] = groups.get(key, 0) + 1
+        if not groups:
+            return
+        text.append("\n\n")
+        text.append("Running instances:", style=f"bold {palette.foreground}")
+        for (label, cwd), count in groups.items():
+            text.append("\n  ")
+            text.append("● ", style=palette.track)
+            text.append(f"{label}   ", style=palette.muted)
+            text.append(cwd, style=palette.muted)
+            text.append(
+                f"  ({count} session{'s' if count > 1 else ''})", style=palette.track
+            )

@@ -8,6 +8,7 @@ import pytest
 
 from claude_swap.fleet import (
     FleetSegment,
+    burn_head,
     order_segments,
     segment_for,
     segment_widths,
@@ -196,3 +197,63 @@ class TestTotalAtRisk:
     def test_elapsed_deadlines_are_not_counted(self):
         segs = [_seg("1", headroom=80, hours=-2)]
         assert total_at_risk(segs, NOW, 24 * 3600.0) == 0.0
+
+
+class TestGaugeDirection:
+    """The bar is a fuel gauge, and a gauge is consumed from its right edge."""
+
+    def test_spend_first_sits_at_the_right(self):
+        ordered = order_segments(
+            [_seg("1", hours=150), _seg("2", hours=20), _seg("3", hours=100)],
+            spend_first_last=True,
+        )
+        assert [s.number for s in ordered] == ["1", "3", "2"]
+
+    def test_it_is_exactly_the_reverse_of_the_list_order(self):
+        """One ordering function with a display flag, so the account list and
+        the gauge can never disagree about which account is next."""
+        segs = [_seg("1", hours=150), _seg("2", hours=20), _seg("3", hours=100)]
+        assert order_segments(segs, spend_first_last=True) == list(
+            reversed(order_segments(segs))
+        )
+
+    def test_unknown_deadlines_stay_at_the_far_end(self):
+        """Reversing must not promote an unschedulable account to the position
+        the eye reads as 'next to be spent'."""
+        ordered = order_segments(
+            [_seg("1", hours=None), _seg("2", hours=20), _seg("3", hours=100)],
+            spend_first_last=True,
+        )
+        assert ordered[-1].number == "2"
+        assert ordered[0].number == "1"
+
+
+class TestBurnHead:
+    def test_points_at_the_most_urgent_reachable_account(self):
+        blocked = FleetSegment(
+            number="3", label="c", email="c@x", headroom_pct=47.0,
+            reset_ts=NOW + 20 * 3600, risk=2.4, is_active=False, blocked=True,
+            unknown=False,
+        )
+        head = burn_head([blocked, _seg("2", hours=100), _seg("1", hours=150)])
+        assert head is not None and head.number == "2", (
+            "urgency alone points at an account nobody can draw from"
+        )
+
+    def test_none_when_everything_is_blocked(self):
+        blocked = FleetSegment(
+            number="1", label="a", email="a@x", headroom_pct=10.0,
+            reset_ts=NOW + 3600, risk=1.0, is_active=False, blocked=True,
+            unknown=False,
+        )
+        assert burn_head([blocked]) is None
+
+    def test_skips_accounts_with_nothing_left(self):
+        assert burn_head([_seg("1", headroom=0, hours=1), _seg("2", hours=99)]).number == "2"
+
+    def test_may_differ_from_the_active_account(self):
+        """When it does, the gauge is showing that quota is being drawn from
+        the wrong place — the exact condition waste-first exists to fix."""
+        active_calm = _seg("1", hours=150, active=True)
+        urgent = _seg("2", hours=5)
+        assert burn_head([active_calm, urgent]).number == "2"

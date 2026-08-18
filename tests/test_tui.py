@@ -1771,34 +1771,73 @@ class TestFleetScreen:
             )
             assert app._store_only is True
 
-    async def test_starts_disarmed_but_still_running(
-        self, tmp_path, fake_fleet_engine
-    ):
-        """Disarmed is a dry-run engine, not a stopped one — the numbers move
-        and the log fills before anyone trusts it with a switch."""
+    async def test_starts_armed(self, tmp_path, fake_fleet_engine):
+        """The command exists to stop quota being wasted; a gauge that watches
+        it happen without acting is not that tool."""
         app = _fleet_app(self._fleet(tmp_path))
         async with app.run_test(size=(100, 32)) as pilot:
             await settle(pilot)
             assert len(fake_fleet_engine.instances) == 1
-            assert fake_fleet_engine.instances[0].dry_run is True
-            assert "AUTO OFF" in self._text(app, "#fleet-headline")
+            assert fake_fleet_engine.instances[0].dry_run is False
+            assert "AUTO" in self._text(app, "#fleet-headline")
 
-    async def test_arming_requires_confirmation_and_relaunches_live(
+    async def test_turning_auto_off_hands_over_the_arrow_keys(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Manual selection and the engine must never both own the account: a
+        cursor left visible while the engine can switch shows a choice the
+        next tick can overrule."""
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            assert app.screen._selected is None
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.screen._selected is None, "armed: arrows must do nothing"
+            await pilot.press("a")
+            await settle(pilot)
+            assert app.screen._armed is False
+            assert fake_fleet_engine.instances[-1].dry_run is True
+            assert "MANUAL" in self._text(app, "#fleet-headline")
+            before = app.screen._selected
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.screen._selected != before
+
+    async def test_enter_switches_to_the_picked_account(
+        self, tmp_path, fake_fleet_engine
+    ):
+        fake = self._fleet(tmp_path)
+        app = _fleet_app(fake)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            await pilot.press("a")          # auto off → manual
+            await settle(pilot)
+            for _ in range(3):              # land on a non-active account
+                if app.screen._selected is not None and not (
+                    fake._accounts[app.screen._selected].is_active
+                ):
+                    break
+                await pilot.press("down")
+                await pilot.pause()
+            await pilot.press("enter")
+            await settle(pilot)
+            assert any(call[0] == "switch_to" for call in fake.calls)
+
+    async def test_toggling_auto_relaunches_the_engine_in_the_new_mode(
         self, tmp_path, fake_fleet_engine
     ):
         app = _fleet_app(self._fleet(tmp_path))
         async with app.run_test(size=(100, 32)) as pilot:
             await settle(pilot)
             await pilot.press("a")
-            await pilot.pause()
-            from claude_swap.tui.modals import ConfirmModal
-
-            assert isinstance(app.screen, ConfirmModal)
-            await pilot.press("y")
             await settle(pilot)
             assert len(fake_fleet_engine.instances) == 2
             assert fake_fleet_engine.instances[0].stopped is True
-            assert fake_fleet_engine.instances[1].dry_run is False
+            assert fake_fleet_engine.instances[1].dry_run is True
+            await pilot.press("a")
+            await settle(pilot)
+            assert fake_fleet_engine.instances[2].dry_run is False
 
     async def test_bar_orders_accounts_by_deadline(
         self, tmp_path, fake_fleet_engine
@@ -1828,8 +1867,10 @@ class TestFleetScreen:
         app = _fleet_app(fake)
         async with app.run_test(size=(100, 32)) as pilot:
             await settle(pilot)
-            legend = self._text(app, "#fleet-legend")
-            assert legend.index("user2") < legend.index("user1")
+            bars = self._text(app, "#fleet-bars")
+            # The soonest-expiring account is named by the ▲ marker under its
+            # own segment; ordering is inside the bar, not a separate legend.
+            assert "user2" in bars
 
     async def test_active_account_is_marked_on_the_bar(
         self, tmp_path, fake_fleet_engine
@@ -1837,7 +1878,7 @@ class TestFleetScreen:
         app = _fleet_app(self._fleet(tmp_path))
         async with app.run_test(size=(100, 32)) as pilot:
             await settle(pilot)
-            legend = self._text(app, "#fleet-legend")
+            legend = self._text(app, "#fleet-bars")
             assert "▲" in legend
 
     async def test_threshold_edit_is_written_to_settings(
@@ -1859,16 +1900,19 @@ class TestFleetScreen:
             await settle(pilot)
             assert load_settings(tmp_path).threshold == before - 2
 
-    async def test_accounts_collapse_to_one_line_each(
+    async def test_accounts_use_the_cli_list_format(
         self, tmp_path, fake_fleet_engine
     ):
+        """Not a new layout: this block answers "tell me everything about
+        account 2", and a reader who knows that shape from `cswap list` should
+        not have to learn a second one."""
         app = _fleet_app(self._fleet(tmp_path))
         async with app.run_test(size=(100, 32)) as pilot:
             await settle(pilot)
             rows = self._text(app, "#fleet-accounts")
-            lines = [line for line in rows.splitlines() if line.strip()]
-            assert len(lines) == 2
-            assert "user1@example.com" in lines[0] or "user1@example.com" in lines[1]
+            assert "Accounts:" in rows
+            assert "user1@example.com" in rows and "user2@example.com" in rows
+            assert "├ 5h:" in rows and "└" in rows
 
     async def test_burn_readout_names_what_it_is_waiting_for(
         self, tmp_path, fake_fleet_engine
@@ -1909,4 +1953,4 @@ class TestFleetScreen:
         async with app.run_test(size=(100, 32)) as pilot:
             await settle(pilot)
             assert app.screen._tracker.pct_per_token() is None
-            assert self._text(app, "#fleet-bar")
+            assert self._text(app, "#fleet-bars")

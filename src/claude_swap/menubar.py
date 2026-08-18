@@ -451,7 +451,7 @@ def run(switcher) -> int:
         # error type the CLI already renders cleanly instead of a traceback.
         raise ClaudeSwitchError(
             "Menu bar mode requires 'rumps'. "
-            "Install with: pip install 'claude-swap[menubar]'"
+            "Install with: pip install 'cfuel[menubar]'"
         ) from e
 
     # rumps never sets an activation policy, so under a framework Python the

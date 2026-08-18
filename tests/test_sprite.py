@@ -61,12 +61,17 @@ class TestPixels:
         assert not rendered.spans
 
     def test_half_transparent_cells_keep_the_opaque_half(self):
+        """The glyph follows the opaque half, and only one colour is ever set
+        — see TestNoInheritedColour for why leaving the other side unset is
+        not the same as making it transparent."""
         top_only = render(_sprite(("K", TRANSPARENT)), 0)[0]
         assert top_only.plain == "▀"
+        assert top_only.spans[0].style.color.triplet.hex == "#101010"
         assert top_only.spans[0].style.bgcolor is None
         bottom_only = render(_sprite((TRANSPARENT, "R")), 0)[0]
-        assert bottom_only.spans[0].style.color is None
-        assert bottom_only.spans[0].style.bgcolor.triplet.hex == "#8a4b2a"
+        assert bottom_only.plain == "▄"
+        assert bottom_only.spans[0].style.color.triplet.hex == "#8a4b2a"
+        assert bottom_only.spans[0].style.bgcolor is None
 
     def test_missing_bottom_row_is_treated_as_transparent(self):
         """Defensive: validate() rejects odd heights, but a caller that
@@ -93,3 +98,42 @@ class TestBeside:
         lines = text.plain.split("\n")
         assert len(lines) == 2
         assert all(line.startswith("   ") for line in lines)
+
+
+class TestNoInheritedColour:
+    """An unset colour is INHERITED, not transparent."""
+
+    def test_bottom_only_cell_uses_the_lower_glyph(self):
+        """Drawing ▀ with no foreground for a bottom-only pixel made the upper
+        half paint in the terminal's default text colour, and every sprite
+        grew a white fringe along its top edges."""
+        rendered = render(_sprite((TRANSPARENT, "R")), 0)[0]
+        assert rendered.plain == "▄"
+        span = rendered.spans[0]
+        assert span.style.color.triplet.hex == "#8a4b2a"
+        assert span.style.bgcolor is None
+
+    def test_top_only_cell_uses_the_upper_glyph(self):
+        rendered = render(_sprite(("K", TRANSPARENT)), 0)[0]
+        assert rendered.plain == "▀"
+        assert rendered.spans[0].style.color.triplet.hex == "#101010"
+        assert rendered.spans[0].style.bgcolor is None
+
+    def test_a_half_transparent_cell_sets_exactly_one_colour(self):
+        """Any colour a cell sets that did not come from a pixel is a fringe
+        waiting to happen."""
+        sprite = _sprite((f"K{TRANSPARENT}R", f"{TRANSPARENT}CK"))
+        row = render(sprite, 0)[0]
+        for span in row.spans:
+            glyph = row.plain[span.start:span.end]
+            colours = (span.style.color is not None) + (span.style.bgcolor is not None)
+            expected = 2 if glyph == "▀" and span.style.bgcolor is not None else 1
+            assert colours == expected, f"{glyph!r} carries {colours} colours"
+
+    def test_missing_bottom_row_never_inherits(self):
+        """An odd-height sprite's last row has no partner; it must still be
+        drawn with its own colour rather than borrowing the terminal's."""
+        rendered = render(Sprite(palette=PALETTE, frames=(("K",),)), 0)[0]
+        assert rendered.plain == "▀"
+        assert rendered.spans[0].style.color.triplet.hex == "#101010"
+        assert rendered.spans[0].style.bgcolor is None

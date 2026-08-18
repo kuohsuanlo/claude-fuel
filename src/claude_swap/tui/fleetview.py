@@ -60,6 +60,10 @@ DISPLAY_INTERVAL_S = 1.0
 # at exactly this period no matter how often the screen is redrawn.
 SPRITE_FRAME_S = 0.22
 
+# Sleep runs at a fraction of the waking rate. A breathing sleeper animated at
+# 4.5 fps looks agitated, which is the opposite of the thing being shown.
+_SLEEP_SLOWDOWN = 5
+
 # The sleep puffs, top row first. A row's puff is chosen by its distance from
 # the current phase, so the whole column appears to rise.
 _ZZZ = ("zZ", "z", "", "Z", "")
@@ -160,6 +164,10 @@ class FleetScreen(Screen):
             yield Static("", id="fleet-bars")
             yield Static("", id="fleet-burn")
             yield Static("", id="fleet-accounts")
+            # The engine's line sits under Running instances, where it was
+            # before: in the pet's narrow column it wrapped across four rows
+            # and read as damage.
+            yield Static("", id="fleet-log")
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -296,7 +304,7 @@ class FleetScreen(Screen):
         if not self.is_attached:
             return
         self._latest = event
-        self._render_status(Palette.from_theme(self.app.current_theme))
+        self._render_log(Palette.from_theme(self.app.current_theme))
         if event.kind == "switch":
             self.app.request_refresh()
 
@@ -362,7 +370,7 @@ class FleetScreen(Screen):
 
     def action_toggle_status(self) -> None:
         self._show_log = not self._show_log
-        self._render_status(Palette.from_theme(self.app.current_theme))
+        self._render_log(Palette.from_theme(self.app.current_theme))
 
     def action_adjust_threshold(self) -> None:
         self._adjusting = not self._adjusting
@@ -419,7 +427,7 @@ class FleetScreen(Screen):
     def _log_note(self, message: str) -> None:
         self._note = message
         self._latest = None
-        self._render_status(Palette.from_theme(self.app.current_theme))
+        self._render_log(Palette.from_theme(self.app.current_theme))
 
     def _render_status(self, palette: Palette) -> None:
         """The pet, with the single most recent event spoken beside it.
@@ -435,6 +443,8 @@ class FleetScreen(Screen):
         # a measurement of work or of an idle minute.
         asleep = not self._burning()
         sprite = pets.SLEEPING if asleep else pets.AWAKE
+        if asleep:
+            frame //= _SLEEP_SLOWDOWN
         rows = render_sprite(sprite, frame, dim=asleep)
         text = Text(no_wrap=True, overflow="ellipsis")
         for index, row in enumerate(rows):
@@ -451,10 +461,26 @@ class FleetScreen(Screen):
                 if puff:
                     text.append(" ")
                     text.append(puff, style=palette.muted)
-        if self._show_log:
-            text.append("\n\n ")
-            text.append(self._status_line(palette))
+        # A caption under the icon, so the state is stated as well as drawn.
+        text.append("\n ")
+        text.append(
+            "Beep is sleeping…" if asleep else "Beep is working…",
+            style=palette.muted if asleep else palette.accent,
+        )
         self._update_status(text)
+
+    def _render_log(self, palette: Palette) -> None:
+        """The engine's latest line, under Running instances."""
+        try:
+            target = self.query_one("#fleet-log", Static)
+        except Exception:
+            return
+        if not self._show_log:
+            target.update(Text(""))
+            return
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append(self._status_line(palette))
+        target.update(text)
 
     def _burning(self) -> bool:
         """Whether this machine is spending tokens right now."""
@@ -563,6 +589,7 @@ class FleetScreen(Screen):
         self._render_bars(segments, now, palette)
         self._render_burn(palette)
         self._render_accounts(segments, now, palette)
+        self._render_log(palette)
 
     def _tier_style(self, segment: fleet.FleetSegment, palette: Palette) -> str:
         return {

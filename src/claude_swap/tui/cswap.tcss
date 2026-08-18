@@ -236,7 +236,12 @@ AddTokenModal Input {
     width: 1fr;
 }
 #fleet-status {
-    width: 26;
+    width: 34;
     height: auto;
     padding: 1 1 0 1;
+}
+
+#fleet-log {
+    height: auto;
+    margin-top: 1;
 }

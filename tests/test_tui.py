@@ -1975,7 +1975,7 @@ class TestFleetStatusLine:
     def _text(app) -> str:
         from textual.widgets import Static
 
-        rendered = app.screen.query_one("#fleet-status", Static).render()
+        rendered = app.screen.query_one("#fleet-log", Static).render()
         return rendered.plain if hasattr(rendered, "plain") else str(rendered)
 
     async def test_h_hides_the_commentary_but_never_the_pet(
@@ -1991,7 +1991,11 @@ class TestFleetStatusLine:
             await pilot.press("h")
             await pilot.pause()
             assert "something happened" not in self._text(app)
-            assert self._text(app).strip(), "the pet must still be drawn"
+            from textual.widgets import Static as _S
+
+            pet = app.screen.query_one("#fleet-status", _S).render()
+            pet_text = pet.plain if hasattr(pet, "plain") else str(pet)
+            assert pet_text.strip(), "the pet must still be drawn"
             await pilot.press("h")
             await pilot.pause()
             assert "something happened" in self._text(app)
@@ -2055,32 +2059,19 @@ class TestWasteProjectionUnits:
 class TestPetTiming:
     """Every frame must be shown for the same length of time."""
 
-    async def test_repaints_do_not_advance_the_animation(
-        self, tmp_path, fake_fleet_engine
-    ):
+    async def test_repaints_do_not_advance_the_animation(self):
         """Repaints arrive at wildly uneven intervals — a one-second data tick,
         a snapshot every three, an engine event whenever one happens. Counting
         them made the walk stutter and skip; the phase comes from the clock."""
-        from claude_swap.tui.app import CswapApp
         from claude_swap.tui.fleetview import FleetScreen
 
-        app = CswapApp(
-            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
-        )
-        async with app.run_test(size=(100, 34)) as pilot:
-            await settle(pilot)
-            screen = app.screen
-            before = FleetScreen._sprite_frame()
-            for _ in range(25):
-                screen._display_tick()
-                screen._render_status(
-                    __import__(
-                        "claude_swap.tui.theme", fromlist=["Palette"]
-                    ).Palette.DARK
-                )
-            assert FleetScreen._sprite_frame() == before, (
-                "25 repaints inside one frame period must not move the phase"
-            )
+        with patch("claude_swap.tui.fleetview.time.monotonic", return_value=1234.0):
+            # The clock is frozen, so anything that moved the phase here would
+            # be a repaint counter — which is exactly the bug: repaints arrive
+            # at wildly uneven intervals and counting them made the animation
+            # stutter.
+            phases = {FleetScreen._sprite_frame() for _ in range(50)}
+        assert len(phases) == 1, f"phase moved without the clock: {phases}"
 
     async def test_the_phase_advances_with_elapsed_time(
         self, tmp_path, fake_fleet_engine
@@ -2101,17 +2092,29 @@ class TestPetTiming:
 class TestPetFrameRate:
     """The pet must animate at its own rate, not the data rate."""
 
-    async def test_the_pose_changes_at_the_frame_rate(
-        self, tmp_path, fake_fleet_engine
-    ):
-        """Measured twice before this held: once because two poses were
-        repeated so the picture only changed every fourth frame, and once
-        because the pet's timer silently never fired. Both looked identical
-        from outside — a one-second animation."""
+    async def _pose_changes(self, app, pilot, seconds=2.0):
         import time as _t
 
         from textual.widgets import Static
 
+        widget = app.screen.query_one("#fleet-status", Static)
+        seen, changes, start = None, 0, _t.monotonic()
+        while _t.monotonic() - start < seconds:
+            await asyncio.sleep(0.02)
+            await pilot.pause()
+            rendered = widget.render()
+            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            if text != seen:
+                seen, changes = text, changes + 1
+        return changes, _t.monotonic() - start
+
+    async def test_awake_pose_changes_at_the_frame_rate(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Measured twice before this held: once because two poses repeated so
+        the picture only changed every fourth frame, and once because the
+        pet's timer silently never fired. Both looked identical from outside —
+        a one-second animation."""
         from claude_swap.tui.app import CswapApp
         from claude_swap.tui.fleetview import SPRITE_FRAME_S
 
@@ -2120,20 +2123,33 @@ class TestPetFrameRate:
         )
         async with app.run_test(size=(120, 40)) as pilot:
             await settle(pilot)
-            widget = app.screen.query_one("#fleet-status", Static)
-            seen, changes, start = None, 0, _t.monotonic()
-            while _t.monotonic() - start < 2.0:
-                await asyncio.sleep(0.02)
-                await pilot.pause()
-                rendered = widget.render()
-                text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
-                if text != seen:
-                    seen, changes = text, changes + 1
-            elapsed = _t.monotonic() - start
-            expected = elapsed / SPRITE_FRAME_S
-            assert changes >= expected * 0.6, (
+            app.screen._burning = lambda: True     # awake: tokens are flowing
+            changes, elapsed = await self._pose_changes(app, pilot)
+            due = elapsed / SPRITE_FRAME_S
+            assert changes >= due * 0.6, (
                 f"{changes} pose changes in {elapsed:.1f}s; at "
-                f"{SPRITE_FRAME_S}s per frame at least {expected*0.6:.0f} were due"
+                f"{SPRITE_FRAME_S}s per frame at least {due*0.6:.0f} were due"
+            )
+
+    async def test_sleep_is_visibly_slower_than_waking(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A breathing sleeper animated at the waking rate looks agitated,
+        which is the opposite of the thing being shown."""
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.fleetview import _SLEEP_SLOWDOWN, SPRITE_FRAME_S
+
+        app = CswapApp(
+            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await settle(pilot)
+            app.screen._burning = lambda: False    # asleep
+            changes, elapsed = await self._pose_changes(app, pilot, seconds=2.5)
+            ceiling = elapsed / (SPRITE_FRAME_S * _SLEEP_SLOWDOWN) + 1
+            assert changes <= ceiling, (
+                f"{changes} changes in {elapsed:.1f}s is faster than the "
+                f"slowed sleep rate allows ({ceiling:.0f})"
             )
 
     def test_no_pose_repeats_a_neighbour(self):

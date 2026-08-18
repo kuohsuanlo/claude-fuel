@@ -25,9 +25,12 @@ from dataclasses import dataclass
 from rich.style import Style
 from rich.text import Text
 
-# The glyph that carries two pixels. Its top half takes the foreground colour;
-# its bottom half shows through to the background.
-_HALF = "▀"
+# The glyphs that carry two pixels. "▀" paints its top half in the foreground
+# and lets the background show below; "▄" is its mirror. Both are needed: a
+# cell with only one opaque half must use the glyph matching that half, or the
+# unset side inherits the terminal's foreground and shows as a white fringe.
+_UPPER = "▀"
+_LOWER = "▄"
 
 # Palette key meaning "paint nothing here".
 TRANSPARENT = "."
@@ -113,9 +116,23 @@ def render(sprite: Sprite, frame: int, *, dim: bool = False) -> list[Text]:
                 # Both halves transparent: emit a space rather than a styled
                 # block, so nothing is painted at all and the row behind shows.
                 line.append(" ")
-                continue
-            style = Style(color=upper, bgcolor=lower, dim=dim or None)
-            line.append(_HALF, style=style)
+            elif upper is not None and lower is not None:
+                line.append(
+                    _UPPER, style=Style(color=upper, bgcolor=lower, dim=dim or None)
+                )
+            else:
+                # HALF-TRANSPARENT CELLS PICK THE GLYPH THAT MATCHES THE
+                # OPAQUE HALF, and never set the other side at all.
+                #
+                # Drawing "▀" with no foreground for a bottom-only pixel was
+                # the "white blocks" bug: an unset colour is not transparent,
+                # it is INHERITED, so the upper half painted in the terminal's
+                # default text colour and every sprite grew a white fringe
+                # along its top edges. Choosing ▄ instead leaves the untouched
+                # half genuinely unpainted.
+                opaque = upper if upper is not None else lower
+                glyph = _UPPER if upper is not None else _LOWER
+                line.append(glyph, style=Style(color=opaque, dim=dim or None))
         out.append(line)
     return out
 

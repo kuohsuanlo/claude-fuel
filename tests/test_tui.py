@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
 from claude_swap.autoswitch import NoSwitchEvent, SwitchEvent
 from claude_swap.json_output import USAGE_API_KEY, USAGE_TOKEN_EXPIRED
@@ -2048,3 +2049,49 @@ class TestWasteProjectionUnits:
                 f"got: {text!r}"
             )
             assert "all spendable" not in text
+
+
+@pytest.mark.asyncio
+class TestPetTiming:
+    """Every frame must be shown for the same length of time."""
+
+    async def test_repaints_do_not_advance_the_animation(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Repaints arrive at wildly uneven intervals — a one-second data tick,
+        a snapshot every three, an engine event whenever one happens. Counting
+        them made the walk stutter and skip; the phase comes from the clock."""
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.fleetview import FleetScreen
+
+        app = CswapApp(
+            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
+        )
+        async with app.run_test(size=(100, 34)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            before = FleetScreen._sprite_frame()
+            for _ in range(25):
+                screen._display_tick()
+                screen._render_status(
+                    __import__(
+                        "claude_swap.tui.theme", fromlist=["Palette"]
+                    ).Palette.DARK
+                )
+            assert FleetScreen._sprite_frame() == before, (
+                "25 repaints inside one frame period must not move the phase"
+            )
+
+    async def test_the_phase_advances_with_elapsed_time(
+        self, tmp_path, fake_fleet_engine
+    ):
+        from claude_swap.tui.fleetview import SPRITE_FRAME_S, FleetScreen
+
+        with patch(
+            "claude_swap.tui.fleetview.time.monotonic",
+            side_effect=[0.0, SPRITE_FRAME_S * 1.5, SPRITE_FRAME_S * 3.5],
+        ):
+            first = FleetScreen._sprite_frame()
+            second = FleetScreen._sprite_frame()
+            third = FleetScreen._sprite_frame()
+        assert (first, second, third) == (0, 1, 3), "one frame per fixed period"

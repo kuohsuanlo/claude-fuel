@@ -52,6 +52,14 @@ if TYPE_CHECKING:
 # the cost is a handful of stats and no network at all.
 DISPLAY_INTERVAL_S = 1.0
 
+# Seconds per animation frame. The pet's phase is derived from the CLOCK, never
+# from a repaint counter: repaints arrive at wildly uneven intervals (a one
+# second data tick, a snapshot every three, an engine event whenever one
+# happens), so counting them made the walk stutter and skip. Deriving the frame
+# from elapsed time means a repaint cannot change the phase and the gait runs
+# at exactly this period no matter how often the screen is redrawn.
+SPRITE_FRAME_S = 0.35
+
 # Quota expiring inside this window is what the headline "about to lose"
 # figure counts. A day is the horizon a person can actually act on — anything
 # further out can be rescued by tomorrow's session.
@@ -120,7 +128,6 @@ class FleetScreen(Screen):
         self._tracker: BurnTracker | None = None
         self._latest: AutoSwitchEvent | None = None
         self._note: str = ""
-        self._frame = 0
         # The engine's running commentary is useful while you are deciding
         # whether to trust it and noise afterwards, so it hides — but the pet
         # never does. It is the proof the instrument is still ticking, and a
@@ -152,6 +159,10 @@ class FleetScreen(Screen):
         self.watch(self.app, "theme", self._on_theme_change)
         self._start_engine()
         self.set_interval(DISPLAY_INTERVAL_S, self._display_tick)
+        # The pet repaints on its own, faster timer. Recomputing every gauge at
+        # animation rate would be pure waste, and tying the walk to the data
+        # tick is what made it stutter.
+        self.set_interval(SPRITE_FRAME_S, self._animate)
         self._display_tick()
 
     def on_unmount(self) -> None:
@@ -398,7 +409,7 @@ class FleetScreen(Screen):
         above it and make the key feel like it broke something.
         """
         sprite = pets.WORKING if self._armed else pets.WATCHING
-        rows = render_sprite(sprite, self._frame, dim=not self._armed)
+        rows = render_sprite(sprite, self._sprite_frame(), dim=not self._armed)
         speech = self._status_line(palette) if self._show_log else None
         # Beside the middle row: it reads as the pet saying it, and it keeps
         # the text clear of the head and the feet.
@@ -413,6 +424,17 @@ class FleetScreen(Screen):
                 text.append("   ")
                 text.append(speech)
         self._update_status(text)
+
+    @staticmethod
+    def _sprite_frame() -> int:
+        """Animation phase from the monotonic clock, so it cannot be advanced
+        by a repaint — only by time passing."""
+        return int(time.monotonic() / SPRITE_FRAME_S)
+
+    def _animate(self) -> None:
+        """Repaint just the pet. Cheap enough to run at animation rate."""
+        if self.is_attached:
+            self._render_status(Palette.from_theme(self.app.current_theme))
 
     def _status_line(self, palette: Palette) -> Text:
         """The latest engine event, or what the screen is doing instead."""
@@ -494,7 +516,6 @@ class FleetScreen(Screen):
             return
         now = time.time()
         palette = Palette.from_theme(self.app.current_theme)
-        self._frame += 1
         segments = self._segments(now)
         self._render_headline(segments, now, palette)
         self._render_status(palette)

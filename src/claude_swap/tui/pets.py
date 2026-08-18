@@ -1,91 +1,249 @@
-"""The pet: Beep, traced pixel-for-pixel from the source art.
+"""The pet: Beep, extracted pixel-for-pixel and rigged to walk.
 
-WHY A PET AT ALL. The screen recomputes every second, and a grid of static
-figures looks identical whether it is measuring or wedged. The pet settles
-that and nothing more — which is why `h` hides the engine's commentary but
-never hides the pet.
+WHY A PET. The screen recomputes every second, and a grid of static figures
+looks identical whether it is measuring or wedged. The pet settles that and
+nothing else — which is why `h` hides the engine's commentary but never hides
+the pet.
 
-WHO. Beep, the Southern Hive Prince: the tall narrow head, the two dark
-compound eyes, the reedy limbs. Kenshi's most-loved character, and cheerful
-where the rest of that world is not.
+WHO. Beep, the Southern Hive Prince: the tall narrow head, two dark compound
+eyes, reedy limbs. Kenshi's most-loved character, and cheerful where the rest
+of that world is not.
 
-NOT DRAWN BY HAND. The reference is a 448x448 PNG that is really a 64x64
-pixel sprite scaled 7x; the block size was recovered from the run lengths, the
-figure separated from the "BEEP" lettering beside it by column occupancy, and
-the result reduced to 10x16 by taking each target cell's MODE colour rather
-than its average. Mode matters at this size: averaging turns a one-pixel arm
-into a faint smear, and a cell is kept as soon as a third of it is opaque,
-because a majority rule erases those limbs outright. Fifteen colours were then
-banded by luminance into five inks plus the dashboard's accent.
+NOT DRAWN — EXTRACTED. The reference is a 448x448 PNG that is really a 64x64
+sprite scaled 7x. The block size came out of its run lengths, the figure was
+separated from the "BEEP" lettering beside it by column occupancy, and every
+one of its 17 colours is carried through unquantised. Reduction to 11x20
+takes each target cell's MODE colour and keeps the cell as soon as a third of
+it is opaque — averaging turns a one-pixel arm into a smear, and a majority
+rule deletes those limbs outright.
 
-Ten pixels wide by sixteen tall is eight text rows, and Beep is meant to be
-tall and thin — squashing him to four rows was tried and lost the head, which
-is the whole silhouette.
+RIGGED, NOT REDRAWN. The figure was cut into head, torso, both arms and both
+legs as pixel SETS rather than boxes (a box around a swinging arm drags torso
+pixels with it), and each frame composites those parts at an offset. So the
+animation is the same body moving, and a change to the artwork flows into
+every frame.
+
+THE GAIT. Beep faces the viewer, so the walk is legs apart, together, apart,
+with the planted leg at full length and the swinging leg raised and pulled in;
+the body and head rise on the passing frames, where a real gait is highest,
+and the arms swing opposite the legs. The swing is deliberately exaggerated:
+the reduction eats a one-pixel step, and caricature beats fidelity when the
+alternative is no visible motion at all.
 """
 
 from __future__ import annotations
 
 from claude_swap.tui.sprite import Sprite
 
+#: Every colour from the source sprite, ordered dark to light.
 _PALETTE = {
-    "K": "#333120",  # the compound eyes
-    "D": "#786450",  # deepest shade — feet, far arm
-    "B": "#95846a",  # mid shade
-    "M": "#ad987a",  # the chitin body tone
-    "L": "#c4aca0",  # highlight
-    "O": "#d7875f",  # fuel drawn in (the dashboard accent)
+    "a": "#333120",
+    "b": "#786450",
+    "c": "#8c755e",
+    "d": "#96896e",
+    "e": "#9c8e72",
+    "f": "#a19275",
+    "g": "#ad9174",
+    "h": "#a8997b",
+    "i": "#b8997b",
+    "j": "#b3a282",
+    "k": "#c2a282",
+    "l": "#bda8a0",
+    "m": "#bfaaa3",
+    "n": "#c2b08d",
+    "o": "#c6b0a8",
+    "p": "#ccb5ad",
+    "q": "#d1bab2",
 }
 
-_BASE = (
-    "...MMMMBB.",
-    "...MMMML..",
-    "...KMMKL..",
-    "...MMMLL..",
-    "......LL..",
-    "...MMMMMMM",
-    "...BMMMMMB",
-    "...LBBMBBL",
-    "DMM..LLL.M",
-    "...MMLLL.L",
-    "...MBBLLMD",
-    "...MLMMLLM",
-    "...MLLMMLM",
-    "....L...L.",
-    "....M...M.",
-    "....D...D.",
-)
-
-
-def _edit(rows: tuple[str, ...], **replacements: str) -> tuple[str, ...]:
-    """A frame as deltas from the base pose, keyed ``r<row index>``.
-
-    Frames are written as edits rather than as whole grids so a change to the
-    figure lands everywhere at once, and so the diff of an animation tweak
-    shows the tweak instead of sixteen unchanged lines.
-    """
-    out = list(rows)
-    for key, value in replacements.items():
-        out[int(key[1:])] = value
-    return tuple(out)
-
-
-#: Idle: Beep blinks, and his arm sags a row. Awake, not working.
+#: Standing: a blink, then a shift of weight from one leg to the other. Alive,
+#: but not working — the contrast with the walk is what carries the state.
 WATCHING = Sprite(
     palette=_PALETTE,
     frames=(
-        _BASE,
-        _edit(_BASE, r2="...MMMML.."),
-        _edit(_BASE, r8=".MM..LLL.M", r9="D..MMLLL.L"),
+    (
+        "...hhhfddd.",
+        "...hhhfl...",
+        "...ahhal...",
+        "...hhhpm...",
+        "....hhmm...",
+        "......ll...",
+        "...jjhhhhjj",
+        "...ehhhhhhh",
+        "...ehhhhheh",
+        "...meehee.m",
+        ".hh..one..h",
+        "b...goqo..h",
+        "...gcoqlg.b",
+        "...ggccccg.",
+        "...gkggkki.",
+        "...gkkgkki.",
+        "....m..gki.",
+        "....g...m..",
+        "....g...g..",
+        "....b...b..",
+    ),
+    (
+        "...hhhfddd.",
+        "...hhhfl...",
+        "...hhhhl...",
+        "...hhhpm...",
+        "....hhmm...",
+        "......ll...",
+        "...jjhhhhjj",
+        "...ehhhhhhh",
+        "...ehhhhheh",
+        "...meehee.m",
+        ".hh..one..h",
+        "b...goqo..h",
+        "...gcoqlg.b",
+        "...ggccccg.",
+        "...gkggkki.",
+        "...gkkgkki.",
+        "....m..gki.",
+        "....g...m..",
+        "....g...g..",
+        "....b...b..",
+    ),
+    (
+        "...hhhfddd.",
+        "...hhhfl...",
+        "...ahhal...",
+        "...hhhpm...",
+        "....hhmm...",
+        "......ll...",
+        "...jjhhhhjj",
+        "...ehhhhhhh",
+        "...ehhhhheh",
+        "...meehee.m",
+        "..h..one..h",
+        "bh..goqo..h",
+        "...gcoqlg.b",
+        "...ggccccg.",
+        "...gkggkki.",
+        "...gkkgkki.",
+        "...mm..gki.",
+        "...g....m..",
+        "...g....g..",
+        "...b....b..",
+    ),
+    (
+        "...hhhfddd.",
+        "...hhhfl...",
+        "...ahhal...",
+        "...hhhpm...",
+        "....hhmm...",
+        "......ll...",
+        "...jjhhhhjj",
+        "...ehhhhhhh",
+        "...ehhhhheh",
+        "...meehee.m",
+        ".hh..one..m",
+        "b...goqo..h",
+        "...gcoqlg.m",
+        "...ggccccgb",
+        "...gkggkki.",
+        "...gkkgkki.",
+        "....m..gki.",
+        "....g...m..",
+        "....g...g..",
+        "....b...b..",
+    ),
     ),
 )
 
-#: Working: the arm comes up and fuel drifts in from the left, one pixel per
-#: frame, until it reaches him.
+#: Working: the walk cycle. Faster-reading than the idle by design, so "the
+#: engine is armed" is visible from across the room.
 WORKING = Sprite(
     palette=_PALETTE,
     frames=(
-        _edit(_BASE, r4="D.....LL..", r7="O..LBBMBBL", r8=".MM..LLL.M"),
-        _edit(_BASE, r4="D.....LL..", r7=".O.LBBMBBL", r8=".MM..LLL.M"),
-        _edit(_BASE, r4="D.....LL..", r7="..OLBBMBBL", r8=".MM..LLL.M"),
+    (
+        "...hhhfddd.",
+        "...hhhfl...",
+        "...ahhal...",
+        "...hhhpm...",
+        "....hhmm...",
+        "......ll...",
+        "...jjhhhhjj",
+        "...ehhhhhhh",
+        "...ehhhhheh",
+        "...meehee.m",
+        "..h..one..h",
+        "bh..goqo..m",
+        "...gcoqlg.b",
+        "...ggccccg.",
+        "...gkggkki.",
+        "...gkkgkki.",
+        "..m.m....gk",
+        "..g.......m",
+        "..g.......g",
+        "..b........",
+    ),
+    (
+        "...hhhfl...",
+        "...hhhhl...",
+        "...ahham...",
+        "...hhhpm...",
+        "....ffmm...",
+        "....jhllhj.",
+        "...jhhhhhhj",
+        "...ehhhhheh",
+        "...eehhheeh",
+        "..hm.ene..m",
+        "bh...oqo..h",
+        "...ggoqo..m",
+        "...gccolggb",
+        "...gkggggi.",
+        "...gkggkki.",
+        "....kkggki.",
+        "....m..gki.",
+        "....g...m..",
+        "....g...g..",
+        "....b...b..",
+    ),
+    (
+        "...hhhfddd.",
+        "...hhhfl...",
+        "...ahhal...",
+        "...hhhpm...",
+        "....hhmm...",
+        "......ll...",
+        "...jjhhhhjj",
+        "...ehhhhhhh",
+        "...ehhhhheh",
+        "..hmeehee.m",
+        "bh...one..m",
+        "....goqo..h",
+        "...gcoqlg.m",
+        "...ggccccgb",
+        "...gkggkki.",
+        "...gkkgkki.",
+        "....mgki...",
+        "......m....",
+        "......g....",
+        "......b....",
+    ),
+    (
+        "...hhhfl...",
+        "...hhhhl...",
+        "...ahham...",
+        "...hhhpm...",
+        "....ffmm...",
+        "....jhllhj.",
+        "...jhhhhhhj",
+        "...ehhhhheh",
+        "...eehhheeh",
+        "..hm.ene..m",
+        "bh...oqo..h",
+        "...ggoqo..m",
+        "...gccolggb",
+        "...gkggggi.",
+        "...gkggkki.",
+        "....kkggki.",
+        "....m..gki.",
+        "....g...m..",
+        "....g...g..",
+        "....b...b..",
+    ),
     ),
 )

@@ -42,7 +42,7 @@ from claude_swap.settings import (
 )
 from claude_swap.sky import SkyWatcher
 from claude_swap.tui import data, pets
-from claude_swap.tui.skyview import SKY_SLOWDOWN, sky_rows
+from claude_swap.tui.skyview import SKY_SLOWDOWN, scene_rows
 from claude_swap.tui.sprite import render as render_sprite
 from claude_swap.tui.theme import Palette
 
@@ -461,17 +461,23 @@ class FleetScreen(Screen):
             sprite, frame = pets.SLEEPING, frame // _SLEEP_SLOWDOWN
         else:
             sprite, frame = pets.WORKING, frame // self._swing_divisor()
-        rows = render_sprite(sprite, frame, dim=asleep)
         text = Text(no_wrap=True, overflow="ellipsis")
-        # The sky goes above the pet, on its own slower phase: weather that
-        # twitches at animation rate reads as a fault rather than as weather.
+        # ONE SCENE, not a weather panel above a cut-out. The pet is painted
+        # onto the sky's own ground, so there is no hole around him and he
+        # reads as being outside in whatever weather is actually outside.
+        # No caption: the picture is the statement, and a place name and a
+        # temperature beside it are just words competing with it.
         sky = self._sky.state() if self._sky else None
         if sky is not None:
-            for row in sky_rows(sky, self._sprite_frame() // SKY_SLOWDOWN):
-                text.append(row)
-                text.append("\n")
-            text.append(sky.label, style=palette.muted)
-            text.append("\n")
+            rows = scene_rows(
+                sky,
+                self._sprite_frame() // SKY_SLOWDOWN,
+                sprite.frames[frame % len(sprite.frames)],
+                sprite.palette,
+                dim=asleep,
+            )
+        else:
+            rows = render_sprite(sprite, frame, dim=asleep)
         for index, row in enumerate(rows):
             if index:
                 text.append("\n")
@@ -832,15 +838,24 @@ class FleetScreen(Screen):
         label_width = max(len(label) for label, _ in rows)
         colour_of = self._account_colours(segments, palette)
         gutter = 2 + label_width + 2
-        for index, (label, row) in enumerate(rows):
-            # Latest deadline first, soonest last: the soonest lands at the
-            # right edge of the coloured run.
-            row = sorted(
-                row,
-                key=lambda s: (
-                    -(s.reset_ts if s.reset_ts is not None else 0.0), int(s.number)
-                ),
+        # Least urgent first, most urgent last — ordered on the SAME axis the
+        # colour is ranked by, so the run always reads green on the left to red
+        # on the right. Ordering by each row's own reset while colouring by the
+        # weekly risk let the two disagree, and a spectrum that is not
+        # monotonic is not a spectrum.
+        order = {
+            seg.number: rank
+            for rank, seg in enumerate(
+                sorted(
+                    segments,
+                    key=lambda s: (
+                        s.risk if s.risk is not None else -1.0, -int(s.number)
+                    ),
+                )
             )
+        }
+        for index, (label, row) in enumerate(rows):
+            row = sorted(row, key=lambda s: order.get(s.number, 0))
             colours = [colour_of.get(seg.number, palette.muted) for seg in row]
             filled, spent, edges = self._gauge(
                 row, colours, width, self._account_weights(row)

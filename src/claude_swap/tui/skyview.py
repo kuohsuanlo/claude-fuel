@@ -38,8 +38,24 @@ SKY_W, SKY_H = 34, 8
 # reads as a fault. Every Nth pet frame advances the sky by one.
 SKY_SLOWDOWN = 3
 
-_DAY_SKY = "#2b3a52"
-_NIGHT_SKY = "#161b2b"
+# The ground the WHOLE panel is painted on, pet included: one scene rather
+# than a picture of weather sitting above an unrelated cut-out. Overcast and
+# wet days are flatter and greyer than clear ones, which is most of what
+# weather looks like from indoors.
+_GROUND = {
+    (True, "clear"): "#3d6191",
+    (True, "cloud"): "#55617a",
+    (True, "rain"): "#454f63",
+    (True, "snow"): "#5d6879",
+    (True, "storm"): "#333a49",
+    (False, "clear"): "#141a2e",
+    (False, "cloud"): "#1c2133",
+    (False, "rain"): "#181d2b",
+    (False, "snow"): "#232838",
+    (False, "storm"): "#12151f",
+}
+_DAY_SKY = _GROUND[(True, "clear")]
+_NIGHT_SKY = _GROUND[(False, "clear")]
 _SUN = "#ffcf5c"
 _SUN_CORE = "#fff2b8"
 _RAY = "#e8a83a"
@@ -50,6 +66,11 @@ _CLOUD_LIT = "#8c94a8"
 _RAIN = "#7fa8d8"
 _SNOW = "#e6f0ff"
 _BOLT = "#ffe98a"
+
+
+def ground_colour(state: SkyState) -> str:
+    """The scene's base colour — the pet stands on this too."""
+    return _GROUND.get((bool(state.is_day), state.kind), _DAY_SKY)
 
 
 def _blank(width: int, height: int) -> list[list[str | None]]:
@@ -95,7 +116,7 @@ def sky_pixels(
     if fraction is None:
         fraction = day_fraction()
     is_day = state.is_day
-    ground = _DAY_SKY if is_day else _NIGHT_SKY
+    ground = ground_colour(state)
     for y in range(SKY_H):
         for x in range(SKY_W):
             buf[y][x] = ground
@@ -140,20 +161,20 @@ def sky_pixels(
     if is_day:
         # Rays pulse on the phase rather than rotating: at three pixels long a
         # rotation is a flicker, while a pulse still reads as heat.
-        reach = 3 + (phase % 3)
+        reach = 5 + (phase % 3)
         for angle in range(0, 360, 45):
             radians = math.radians(angle)
-            for step in range(3, reach + 1):
+            for step in range(4, reach + 1):
                 x = int(round(cx + math.cos(radians) * step))
                 y = int(round(cy + math.sin(radians) * step * 0.6))
                 if 0 <= x < SKY_W and 0 <= y < SKY_H:
                     buf[y][x] = _RAY
-        _disc(buf, cx, cy, 2.0, _SUN, _SUN_CORE)
+        _disc(buf, cx, cy, 3.0, _SUN, _SUN_CORE)
     else:
-        _disc(buf, cx, cy, 2.0, _MOON, None)
+        _disc(buf, cx, cy, 3.0, _MOON, None)
         # The crescent is carved by a second disc of sky, so the moon has a
         # shape rather than being a dot.
-        _disc(buf, cx + 2, cy - 1, 1.6, ground)
+        _disc(buf, cx + 3, cy - 1, 2.5, ground)
         for y in range(SKY_H):
             for x in range(SKY_W):
                 if buf[y][x] == _MOON and (x + y) % 7 == 0:
@@ -169,5 +190,40 @@ def sky_pixels(
 
 
 def sky_rows(state: SkyState, phase: int) -> list[Text]:
-    """The panel as text rows, ready to place above the pet."""
+    """The panel alone, without the pet standing in it."""
     return render_pixels(sky_pixels(state, phase))
+
+
+def scene_rows(
+    state: SkyState,
+    phase: int,
+    pet_frame: tuple[str, ...],
+    palette: dict[str, str],
+    *,
+    dim: bool = False,
+) -> list[Text]:
+    """Sky and pet as ONE picture, sharing a background.
+
+    The pet used to be a transparent cut-out below a weather panel, so the
+    terminal showed through underneath him and the two read as unrelated
+    widgets. Painting both onto the same ground makes it a scene: he is
+    outside, in whatever weather is actually outside.
+
+    Transparent pet pixels take the ground rather than being left unpainted —
+    the whole point is that there is no hole around him.
+    """
+    ground = ground_colour(state)
+    sky = sky_pixels(state, phase)
+    pet_h = len(pet_frame)
+    pet_w = len(pet_frame[0]) if pet_frame else 0
+    width = max(SKY_W, pet_w)
+    buf: list[list[str | None]] = []
+    for row in sky:
+        buf.append(list(row) + [ground] * (width - SKY_W))
+    for y in range(pet_h):
+        line: list[str | None] = []
+        for x in range(width):
+            key = pet_frame[y][x] if x < pet_w else "."
+            line.append(ground if key == "." else palette.get(key, ground))
+        buf.append(line)
+    return render_pixels(buf, dim=dim)

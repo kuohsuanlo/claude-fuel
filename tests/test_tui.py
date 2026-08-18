@@ -2107,18 +2107,46 @@ class TestPetFrameRate:
         from claude_swap.tui.skyview import SKY_H
 
         widget = app.screen.query_one("#fleet-status", Static)
-        sky_rows_count = SKY_H // 2 + 1          # panel plus its caption
+        sky_rows_count = SKY_H // 2              # the panel; there is no caption
         pet_rows = pets.SLEEPING.height // 2
+
+        def signature() -> str:
+            """The pet's appearance INCLUDING colour.
+
+            Once the sky's ground fills every transparent pixel, every cell is
+            the same glyph and the plain text never changes — the animation
+            lives entirely in the colours. Comparing text alone reported a
+            moving pet as frozen.
+            """
+            rendered = widget.render()
+            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            spans = getattr(rendered, "spans", [])
+            row_starts = [0]
+            for index, char in enumerate(text):
+                if char == "\n":
+                    row_starts.append(index + 1)
+            if len(row_starts) <= sky_rows_count:
+                return text
+            begin = row_starts[sky_rows_count]
+            end = (
+                row_starts[sky_rows_count + pet_rows]
+                if len(row_starts) > sky_rows_count + pet_rows
+                else len(text)
+            )
+            styles = [
+                (span.start, span.end, str(span.style))
+                for span in spans
+                if span.start >= begin and span.end <= end
+            ]
+            return text[begin:end] + repr(styles)
+
         seen, changes, start = None, 0, _t.monotonic()
         while _t.monotonic() - start < seconds:
             await asyncio.sleep(0.02)
             await pilot.pause()
-            rendered = widget.render()
-            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
-            lines = text.split("\n")
-            pet = "\n".join(lines[sky_rows_count : sky_rows_count + pet_rows])
-            if pet != seen:
-                seen, changes = pet, changes + 1
+            current = signature()
+            if current != seen:
+                seen, changes = current, changes + 1
         return changes, _t.monotonic() - start
 
     async def test_awake_pose_changes_at_the_frame_rate(

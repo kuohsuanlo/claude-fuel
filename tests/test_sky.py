@@ -117,3 +117,38 @@ class TestLabel:
         assert SkyState("rain", True, 90, 17.4, "Taipei", True).label == (
             "Taipei 17° rain"
         )
+
+
+class TestScene:
+    """Sky and pet share one background — there is no hole around him."""
+
+    def _sprite(self):
+        return (("ab", ".b"), ("ba", "a."))
+
+    def test_transparent_pet_pixels_take_the_ground(self):
+        """The pet used to be a cut-out with the terminal showing through, so
+        the two read as unrelated widgets rather than as one scene."""
+        from claude_swap.tui.skyview import SKY_H, SKY_W, ground_colour, scene_rows
+
+        state = SkyState("clear", True, 0, 20.0, "", True)
+        rows = scene_rows(state, 0, ("a." + "." * (SKY_W - 2),), {"a": "#ff0000"})
+        assert len(rows) == (SKY_H + 1 + 1) // 2
+        last = rows[-1]
+        assert " " not in last.plain, "a transparent pet pixel left the ground bare"
+
+    def test_the_ground_changes_with_the_weather(self):
+        from claude_swap.tui.skyview import ground_colour
+
+        clear = ground_colour(SkyState("clear", True, 0, 20.0, "", True))
+        rain = ground_colour(SkyState("rain", True, 90, 15.0, "", True))
+        night = ground_colour(SkyState("clear", False, 0, 12.0, "", True))
+        assert len({clear, rain, night}) == 3
+        # overcast is flatter and darker than clear daylight
+        assert sum(int(rain[i:i + 2], 16) for i in (1, 3, 5)) < sum(
+            int(clear[i:i + 2], 16) for i in (1, 3, 5)
+        )
+
+    def test_an_unknown_sky_still_has_a_ground(self):
+        from claude_swap.tui.skyview import ground_colour
+
+        assert ground_colour(SkyState()).startswith("#")

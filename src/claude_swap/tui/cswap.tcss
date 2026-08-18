@@ -233,12 +233,18 @@ AddTokenModal Input {
     height: auto;
 }
 #fleet-accounts {
-    width: 1fr;
+    /* Shrink to the text, so the pet can sit a fixed gap after the longest
+       account line instead of being pinned to the far right of the screen. */
+    width: auto;
 }
 #fleet-status {
-    width: 39;
+    /* Ten columns of gap after the account list, then the sprite: 34 cells
+       wide, plus a space and the two-character sleep puff. Sized from what it
+       must hold — one cell short and every row wraps, and pixel art cannot
+       survive a wrap. */
+    width: 47;
     height: auto;
-    padding: 1 1 0 1;
+    padding: 0 0 0 10;
 }
 
 #fleet-log {

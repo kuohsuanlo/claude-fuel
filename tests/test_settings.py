@@ -82,11 +82,23 @@ class TestLoadSettings:
         assert loaded.threshold == AutoSwitchSettings().threshold
         assert loaded.include_api_key_accounts is True
 
-    def test_unsupported_strategy_falls_back_to_best(self, tmp_path: Path):
+    def test_unsupported_strategy_falls_back_to_the_default(self, tmp_path: Path):
         settings_path(tmp_path).write_text(
             json.dumps({"autoswitch": {"strategy": "chaos"}})
         )
-        assert load_settings(tmp_path).strategy == "best"
+        assert load_settings(tmp_path).strategy == "waste-first"
+
+    def test_waste_first_is_the_default_strategy(self, tmp_path: Path):
+        """Deadline-awareness is the default: `best` parks on whichever account
+        has the most left, which is reliably the one whose quota is in the
+        least danger of expiring unused."""
+        assert load_settings(tmp_path).strategy == "waste-first"
+
+    def test_waste_first_is_a_valid_strategy(self, tmp_path: Path):
+        settings_path(tmp_path).write_text(
+            json.dumps({"autoswitch": {"strategy": "waste-first"}})
+        )
+        assert load_settings(tmp_path).strategy == "waste-first"
 
     def test_consume_first_is_a_valid_strategy(self, tmp_path: Path):
         settings_path(tmp_path).write_text(

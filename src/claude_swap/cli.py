@@ -652,12 +652,13 @@ Defaults live in settings.json in the backup root; flags override them.
     )
     parser.add_argument(
         "--strategy",
-        choices=("best", "consume-first"),
+        choices=("waste-first", "consume-first", "best"),
         default=None,
         help=(
-            "Target selection: 'best' (most quota left; default) or "
-            "'consume-first' (proactively use the account whose weekly window "
-            "resets soonest)"
+            "Target selection: 'waste-first' (default; spend the quota closest "
+            "to expiring, measured as headroom per hour until its weekly reset), "
+            "'consume-first' (the soonest weekly reset, regardless of how much "
+            "is left), or 'best' (simply the most quota left, ignoring deadlines)"
         ),
     )
     parser.add_argument(

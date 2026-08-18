@@ -47,7 +47,14 @@ class AutoSwitchSettings:
     interval_seconds: float = 60.0
     cooldown_seconds: float = 300.0
     hysteresis_pct: float = 10.0
-    strategy: str = "best"  # "best" (most headroom) or "consume-first" (soonest weekly reset)
+    # "waste-first" (default) ranks by quota ABOUT TO EXPIRE — headroom
+    # divided by time until that weekly window resets — so perishable quota is
+    # spent before it is lost. "consume-first" ranks by the reset time alone,
+    # and "best" ignores deadlines entirely and simply sits on whichever
+    # account has the most left. The default changed to waste-first because
+    # "most left" reliably parks on the account with the LONGEST deadline,
+    # which is exactly the quota least in danger of being wasted.
+    strategy: str = "waste-first"
     include_api_key_accounts: bool = False
     unhealthy_ticks: int = 3
     # Comma-separated model display name(s) (e.g. "Fable" or "Fable,Opus"),
@@ -120,7 +127,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "autoswitch", "strategy", "strategy", "choice",
-            choices=("best", "consume-first"),
+            choices=("waste-first", "consume-first", "best"),
             help="How auto-switch picks the target account",
         ),
         SettingSpec(

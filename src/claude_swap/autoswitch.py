@@ -149,6 +149,35 @@ HORIZON_HEADROOM_RATIO = 2.0
 # whichever account we happen to hold.
 SPENT_HEADROOM_PCT = 3.0
 
+# Triggers that fire while the active account is still USABLE — they optimise
+# where we sit rather than escape somewhere dead. Every anti-flap guard
+# (cooldown, the no-return bar, the healthy-landing rule) applies to exactly
+# this set and to no other trigger, because at-limit and failover must escape
+# even when a guard would refuse. Named once: a trigger missing from one of
+# those lists does not fail loudly, it silently bypasses that guard.
+PROACTIVE_TRIGGERS = ("proactive", "consume-first", "waste-first")
+
+# Strategies that also act BELOW the threshold. `best` waits for the threshold
+# because its only goal is to avoid a limit; these two additionally refuse to
+# let quota expire unused, and quota expires on its own schedule regardless of
+# how healthy the account holding it is.
+DEADLINE_STRATEGIES = ("consume-first", "waste-first")
+
+# Anti-flap margin for waste-first, as a RATIO on the risk axis for the same
+# reason HORIZON_HEADROOM_RATIO is one on the headroom axis: "strictly more
+# urgent" is no margin at all, and two accounts with similar deadlines would
+# trade places on measurement noise. A candidate must be a quarter more
+# urgent than where we already are.
+WASTE_HYSTERESIS_RATIO = 1.25
+
+# Risk floor, in percentage points per hour. Below this the quota genuinely at
+# stake is not worth a switch: 0.1 %/h sustained over a whole week is under 17
+# points, and the account holding it is in no danger of wasting anything soon.
+# It also keeps an active account with no measurable risk (unknown reset, or a
+# full weekly window) from being displaced by a candidate that is barely
+# moving either.
+WASTE_MIN_RISK_PCT_PER_H = 0.1
+
 
 def _recovery_is_useful(
     candidate_recovery_ts: float,
@@ -533,6 +562,61 @@ def _window_pcts(
 _limiting_reset_ts = poll_policy.limiting_reset_ts
 _earliest_future_reset_ts = poll_policy.earliest_future_reset_ts
 _parse_reset_ts = poll_policy.parse_reset_ts
+
+
+def _weekly_windows(
+    usage: dict | str | None, models: Sequence[str]
+) -> list[tuple[str, float, str | None]]:
+    """The PERISHABLE windows: everything ``relevant_windows`` gates on except
+    the 5-hour one.
+
+    The 5h window is excluded on purpose. It recycles every five hours, so
+    quota left unused in it is not lost — it is back before the day is out.
+    Only the weekly windows (``7d`` and any configured per-model scoped
+    window) carry quota that expires for good, which is the whole subject of
+    the waste-first strategy.
+    """
+    if not isinstance(usage, dict):
+        return []
+    return [w for w in oauth.relevant_windows(usage, models) if w[0] != "5h"]
+
+
+def waste_risk(
+    usage: dict | str | None, models: Sequence[str], now: float
+) -> float | None:
+    """Perishable quota per hour: how fast this account must be spent to not
+    waste any, in percentage points per hour. ``None`` when unmeasurable.
+
+    THE ONE NUMBER THE WASTE-FIRST STRATEGY RANKS BY, and the answer to
+    "earliest-expiring AND most valuable" being two axes: a deadline alone
+    picks an account with nothing left to lose, and headroom alone picks one
+    whose week has barely started. Their ratio is a single quantity with a
+    plain meaning — 49 points that vanish in 20 hours is 2.45 %/h of pressure,
+    72 points that vanish in 157 hours is only 0.46 — and it is directly
+    comparable to the burn rate the machine can actually sustain.
+
+    Measured on the BINDING weekly window (the most-used one), because that is
+    the window that will stop the account, and its own reset is the deadline
+    that matters. An account with no weekly window, or none with a known
+    future reset, returns ``None``: unschedulable, never "urgent by default".
+    A weekly window already at 100% returns 0.0 — a real measurement (nothing
+    left to waste), not an absence of one.
+    """
+    windows = _weekly_windows(usage, models)
+    if not windows:
+        return None
+    _label, pct, resets_at = max(windows, key=lambda w: w[1])
+    reset_ts = _parse_reset_ts(resets_at)
+    if reset_ts is None or reset_ts <= now:
+        return None
+    headroom = 100.0 - pct
+    if headroom <= 0:
+        return 0.0
+    # Floored at a minute so an imminent reset yields a large-but-finite
+    # urgency instead of a division blow-up. Ranking only ever compares these
+    # values, so the floor changes no ordering that matters.
+    hours = max((reset_ts - now) / 3600.0, 1.0 / 60.0)
+    return headroom / hours
 
 
 def _seven_day_reset_ts(usage: dict | str | None, now: float) -> float | None:
@@ -978,7 +1062,7 @@ class AutoSwitchEngine:
             self._idle_hold_since = None
             utilization = 100.0 - active_headroom
             if utilization < settings.threshold:
-                if settings.strategy != "consume-first":
+                if settings.strategy not in DEADLINE_STRATEGIES:
                     self._emit(
                         NoSwitchEvent(
                             reason="below-threshold",
@@ -991,11 +1075,14 @@ class AutoSwitchEngine:
                         )
                     )
                     return TickOutcome.NO_ACTION
-                # consume-first: below the threshold we still proactively move to
-                # whichever account's weekly window resets soonest, to burn the
-                # most-perishable quota first. Candidate selection decides whether
-                # a sooner-resetting account with room actually exists.
-                trigger = "consume-first"
+                # A deadline strategy still moves below the threshold, to spend
+                # perishable quota before it expires: consume-first goes to
+                # whichever weekly window resets soonest, waste-first to
+                # wherever the most quota is about to be lost per hour.
+                # Candidate selection decides whether such an account exists;
+                # the trigger is named for the strategy so the log says which
+                # policy asked.
+                trigger = settings.strategy
             else:
                 trigger = "at-limit" if active_headroom <= 0 else "proactive"
         else:
@@ -1046,7 +1133,7 @@ class AutoSwitchEngine:
                 return TickOutcome.NO_ACTION
             trigger = "failover"
 
-        if trigger in ("proactive", "consume-first") and self._in_cooldown(state):
+        if trigger in PROACTIVE_TRIGGERS and self._in_cooldown(state):
             self._emit(NoSwitchEvent(reason="cooldown"))
             return TickOutcome.NO_ACTION
 
@@ -1069,7 +1156,7 @@ class AutoSwitchEngine:
             else []
         )
         if (
-            trigger == "consume-first"
+            trigger in DEADLINE_STRATEGIES
             and not oauth_candidates
             and active_headroom is not None
         ):
@@ -1099,6 +1186,7 @@ class AutoSwitchEngine:
             return TickOutcome.BLOCKED
 
         consume_first = settings.strategy == "consume-first"
+        waste_first = settings.strategy == "waste-first"
 
         def _rank(**kw):
             """Rank with the no-return bar, and WITHOUT it if that empties AND
@@ -1177,6 +1265,7 @@ class AutoSwitchEngine:
         ordered, any_known, active_reset_ts = _rank(
             trigger=trigger,
             consume_first=consume_first,
+            waste_first=waste_first,
             oauth_candidates=oauth_candidates,
             usage=usage,
             headroom=headroom,
@@ -1186,7 +1275,7 @@ class AutoSwitchEngine:
             now=decided_now,
         )
 
-        if trigger == "consume-first" and ordered:
+        if trigger in DEADLINE_STRATEGIES and ordered:
             # Two-phase commit: the provisional pick may have ridden a
             # snapshot up to CANDIDATE_MAX_INTERVAL_S stale — consume-first
             # decides below the threshold, where the collector only escalates
@@ -1208,6 +1297,7 @@ class AutoSwitchEngine:
             ordered, any_known, active_reset_ts = _rank(
                 trigger=trigger,
                 consume_first=consume_first,
+                waste_first=waste_first,
                 oauth_candidates=oauth_candidates,
                 usage=usage,
                 headroom=headroom,
@@ -1217,7 +1307,7 @@ class AutoSwitchEngine:
                 now=decided_now,
             )
 
-        if not ordered and api_key_candidates and trigger != "consume-first":
+        if not ordered and api_key_candidates and trigger not in DEADLINE_STRATEGIES:
             # Last resort when we must move: metered API-key accounts
             # (unmeasurable headroom). Never for a below-threshold consume-first
             # nudge — those API-key accounts have no weekly window to consume.
@@ -1234,6 +1324,45 @@ class AutoSwitchEngine:
                     )
                 )
                 return TickOutcome.BLOCKED
+            if trigger == "waste-first":
+                # Below the threshold and healthy: staying put is the correct
+                # outcome, never a block. Say which of the three ways it
+                # happened, so a user watching a fleet that never moves can
+                # tell "nothing is at risk" from "this account is the one at
+                # risk" — opposite situations that look identical from outside.
+                # Recomputed from the SAME snapshot the ranking just decided
+                # on (the phase-2 refetch's, when there was one), so the
+                # reported reason cannot describe a state the decision never
+                # saw.
+                if waste_risk(usage.get(current), self._models, decided_now) is None:
+                    # The active account has no weekly window with a known
+                    # future reset, so we are holding WITHOUT a baseline: the
+                    # comparison every candidate failed was against an assumed
+                    # zero. Named separately because the remedy differs — this
+                    # one clears itself when the API reports a reset, while
+                    # "already-burning-soonest" is a real verdict about a
+                    # readable fleet.
+                    self._emit(
+                        NoSwitchEvent(
+                            reason="reset-unknown",
+                            detail=(
+                                "active account's weekly reset time is "
+                                "unknown, and no other account is losing "
+                                "quota fast enough to move for"
+                            ),
+                        )
+                    )
+                    return TickOutcome.NO_ACTION
+                self._emit(
+                    NoSwitchEvent(
+                        reason="already-burning-soonest",
+                        detail=(
+                            "no account is losing quota meaningfully faster "
+                            "than this one"
+                        ),
+                    )
+                )
+                return TickOutcome.NO_ACTION
             if trigger == "consume-first":
                 # Below the threshold and healthy: staying put is a correct
                 # outcome, never a block. Distinguish *why* nothing qualified
@@ -1313,7 +1442,7 @@ class AutoSwitchEngine:
         systemic = ""
         for num in ordered:
             email = self.switcher.account_email(num)
-            if trigger == "consume-first":
+            if trigger in DEADLINE_STRATEGIES:
                 # The phase-2 refetch is best-effort: the collector refuses
                 # accounts in failure backoff or claimed by a concurrent
                 # poller, which then serve their stored entries. Consume-first
@@ -1467,7 +1596,7 @@ class AutoSwitchEngine:
         left, or only a different active?
         """
         came_from = state.get("lastSwitchFrom")
-        if trigger not in ("proactive", "consume-first") or came_from is None:
+        if trigger not in PROACTIVE_TRIGGERS or came_from is None:
             return None
         # Only while we are still standing where that switch put us. A manual
         # switch away already undid the move, so there is nothing left to
@@ -1757,6 +1886,7 @@ class AutoSwitchEngine:
         *,
         trigger: str,
         consume_first: bool,
+        waste_first: bool,
         oauth_candidates: list[str],
         no_return: str | None,
         usage: dict[str, dict | str | None],
@@ -1777,6 +1907,14 @@ class AutoSwitchEngine:
         # threshold) target must reset strictly sooner than where we are.
         active_reset_ts = (
             _seven_day_reset_ts(usage.get(current), now) if consume_first else None
+        )
+        # What the account we are sitting on is currently losing per hour.
+        # `None` (no weekly window, or no known future reset) reads as 0.0 for
+        # the COMPARISON only: an account whose waste cannot be measured has
+        # no claim to be defended, and the floor below still stops a candidate
+        # that is barely at risk itself from displacing it.
+        active_risk = (
+            waste_risk(usage.get(current), self._models, now) if waste_first else None
         )
         # When NOTHING is below the threshold — the active account and every
         # candidate all in the 90s — "land somewhere healthy" has no answer,
@@ -1838,12 +1976,13 @@ class AutoSwitchEngine:
             reset_ts = (
                 _seven_day_reset_ts(usage.get(num), now) if consume_first else None
             )
+            risk = waste_risk(usage.get(num), self._models, now) if waste_first else None
             recovery_ts = (
                 _binding_recovery_ts(usage.get(num), self._models, now)
                 if all_above
                 else 0.0
             )
-            if trigger in ("proactive", "consume-first"):
+            if trigger in PROACTIVE_TRIGGERS:
                 # Landing must be healthy: an account at/over the threshold
                 # would re-trigger on the very next tick. At-limit and failover
                 # are escapes that skip this whole block — any account with real
@@ -1896,6 +2035,31 @@ class AutoSwitchEngine:
                             ):
                                 fallback.append(((0, recovery_ts, -h), num))
                             continue
+                elif trigger == "waste-first":
+                    # Rank by what is actually being LOST. Below the threshold
+                    # the only reason to move is that quota somewhere else is
+                    # expiring faster than quota here, so a candidate must be
+                    # measurably at risk (unknown risk never qualifies — an
+                    # unschedulable account is not an urgent one) AND beat both
+                    # margins: a ratio over the active account's own risk, so
+                    # similar deadlines cannot trade places on noise, and an
+                    # absolute floor, so a fleet with nothing much at stake
+                    # stays put instead of drifting between accounts.
+                    #
+                    # BRANCHED ON THE TRIGGER, NOT THE STRATEGY. Above the
+                    # threshold the trigger is `proactive` even under this
+                    # strategy, and that is an ESCAPE: the question becomes
+                    # "is this landing worth the move?", which a deadline
+                    # cannot answer — a 4-point landing is a flap however
+                    # perishable its quota is. Falling through to the
+                    # hysteresis gate below is what keeps that guard in force;
+                    # the risk axis still decides the ORDER among candidates
+                    # that clear it, because the sort key keys on the strategy.
+                    if risk is None or risk <= max(
+                        (active_risk or 0.0) * WASTE_HYSTERESIS_RATIO,
+                        WASTE_MIN_RISK_PCT_PER_H,
+                    ):
+                        continue
                 elif consume_first:
                     # Purely proactive on reset ordering: below the threshold,
                     # only move to accounts whose weekly window resets sooner
@@ -1913,7 +2077,7 @@ class AutoSwitchEngine:
                     # qualifies; near-line pairs can't flap back).
                     if h - active_headroom < settings.hysteresis_pct:
                         continue
-            if all_above and trigger in ("proactive", "consume-first"):
+            if all_above and trigger in PROACTIVE_TRIGGERS:
                 # Ranked on the axis its own gate decided, and TIERED so the two
                 # stay comparable: a candidate returning inside the horizon
                 # beats one that does not, whatever its headroom. Untiered, the
@@ -1938,6 +2102,12 @@ class AutoSwitchEngine:
                 key: tuple = (
                     (0, recovery_ts, -h) if by_recovery else (1, -h, recovery_ts)
                 )
+            elif waste_first:
+                # Most-at-risk first; headroom breaks ties, then sequence
+                # order. Unknown risk sorts last rather than being dropped:
+                # above the threshold this same key ranks an ESCAPE, where any
+                # usable account beats staying on a spent one.
+                key = (-(risk if risk is not None else -1.0), -h)
             elif consume_first:
                 # Soonest weekly reset first (unknown resets sort last), most
                 # headroom breaks ties, then sequence order.
@@ -2124,7 +2294,7 @@ class AutoSwitchEngine:
         # state lock.
         with self._state_lock():
             state = self._read_state()
-            if trigger in ("proactive", "consume-first") and self._in_cooldown(state):
+            if trigger in PROACTIVE_TRIGGERS and self._in_cooldown(state):
                 self._emit(NoSwitchEvent(reason="cooldown"))
                 return TickOutcome.NO_ACTION
 

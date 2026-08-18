@@ -306,13 +306,21 @@ class TestEngineHarnessIsolation:
 
 
 class TestDecisionTable:
-    def test_below_threshold_is_no_action(self, harness):
-        outcome = harness.tick_with_usage({
+    def test_below_threshold_is_no_action(self, temp_home):
+        # Pinned to `best`, whose ONLY question is the threshold. A deadline
+        # strategy (now the default) also holds here, but for its own reason —
+        # covered in TestWasteFirstStrategy rather than conflated with this.
+        h = EngineHarness(temp_home, strategy="best")
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        h.seed(3, "c@example.com")
+        h.make_live("a@example.com", 1)
+        outcome = h.tick_with_usage({
             "1": _usage(50), "2": _usage(10), "3": _usage(10),
         })
         assert outcome is TickOutcome.NO_ACTION
-        assert harness.active_number() == 1
-        reasons = [e.reason for e in harness.events if isinstance(e, NoSwitchEvent)]
+        assert h.active_number() == 1
+        reasons = [e.reason for e in h.events if isinstance(e, NoSwitchEvent)]
         assert reasons == ["below-threshold"]
 
     def test_over_threshold_switches_to_max_headroom(self, harness):
@@ -383,7 +391,7 @@ class TestDecisionTable:
         # Cooldown disabled so only the gate itself prevents flapping: after
         # 99→89 the roles reverse, and the old account (99%) can never beat
         # the new active (89%) — the move is one-way.
-        h = EngineHarness(temp_home, cooldown_seconds=0.0)
+        h = EngineHarness(temp_home, cooldown_seconds=0.0, strategy="best")
         h.seed(1, "a@example.com")
         h.seed(2, "b@example.com")
         h.make_live("a@example.com", 1)
@@ -2276,7 +2284,7 @@ class TestPctLabel:
         assert "switch at 99.9%" in poll.human()
 
     def test_below_threshold_detail_shows_fractional_threshold(self, temp_home):
-        h = EngineHarness(temp_home, threshold=99.9)
+        h = EngineHarness(temp_home, threshold=99.9, strategy="best")
         h.seed(1, "a@example.com")
         h.seed(2, "b@example.com")
         h.make_live("a@example.com", 1)
@@ -2291,7 +2299,7 @@ class TestPctLabel:
     ):
         # utilization 99.85 with threshold 99.9: .0f on the left side used
         # to render the logically impossible "100% < 99.9%".
-        h = EngineHarness(temp_home, threshold=99.9)
+        h = EngineHarness(temp_home, threshold=99.9, strategy="best")
         h.seed(1, "a@example.com")
         h.seed(2, "b@example.com")
         h.make_live("a@example.com", 1)
@@ -2578,7 +2586,9 @@ class TestModelAwareSwitch:
 
     def test_without_model_setting_the_same_usage_holds(self, temp_home):
         # Default engine ignores scoped windows → #1 reads 5% used, no switch.
-        h = self._seed(temp_home)
+        # Pinned to `best`: this is about the MODEL axis being absent, and a
+        # deadline strategy would report its own (correct) reason instead.
+        h = self._seed(temp_home, strategy="best")
         outcome = h.tick_with_usage({
             "1": _model_usage(5, 100),
             "2": _model_usage(5, 30),
@@ -3024,7 +3034,7 @@ class TestConsumeFirstStrategy:
     def test_best_strategy_unaffected_below_threshold(self, temp_home):
         # Regression: default (best) still holds below threshold even when a
         # peer resets sooner — consume-first behavior must be opt-in.
-        h = EngineHarness(temp_home)  # strategy defaults to "best"
+        h = EngineHarness(temp_home, strategy="best")  # no longer the default
         h.seed(1, "a@example.com")
         h.seed(2, "b@example.com")
         h.make_live("a@example.com", 1)
@@ -4631,6 +4641,7 @@ class TestHorizonAxisDoesNotFlap:
         args = dict(
             trigger="proactive",
             consume_first=False,
+            waste_first=False,
             oauth_candidates=["1", "3"],
             usage={"1": _usage(40), "2": _usage(96), "3": _usage(99)},
             headroom={"1": 60.0, "2": 4.0, "3": 1.0},
@@ -6894,3 +6905,197 @@ class TestFreshenRoutesThroughGate:
         assert gate_calls["args"][0] == "2"
         assert "called" not in direct, "freshen must not POST outside the gate"
 
+
+
+# Reset instants expressed as OFFSETS FROM THE FAKE CLOCK, which is what the
+# waste axis actually reads: risk is headroom divided by hours-until-reset, so
+# a fixed calendar date would make every case's urgency depend on where the
+# clock happens to sit. `_at(h)` names the deadline in hours from now.
+def _at(hours: float, clock_now: float = 1_000_000.0) -> str:
+    return _iso_at(clock_now + hours * 3600.0)
+
+
+class TestWasteFirstStrategy:
+    """The default strategy: spend the quota nearest to expiring.
+
+    `best` ranks by how much is left, which reliably parks on the account with
+    the LONGEST deadline — the quota in the least danger of being wasted. These
+    pin the axis that replaced it.
+    """
+
+    def _harness(self, temp_home: Path, **kw) -> EngineHarness:
+        h = EngineHarness(temp_home, **kw)
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        h.seed(3, "c@example.com")
+        h.make_live("a@example.com", 1)
+        return h
+
+    def test_reported_fleet_moves_to_the_expiring_account(self, temp_home):
+        """The case this strategy was written for, with the real numbers.
+
+        #1 is comfortable (28% of a week used, six days left), #2 is nearly
+        spent, #3 has 49 points that vanish in 20 hours. `best` sits on #1
+        because it has the most headroom, and #3's 49 points expire unused.
+        Waste-first reads #3 as 2.4 %/h of pressure against #1's 0.46 and
+        moves. The threshold is 97 so #3's 5-hour window (90%) is a legal
+        landing — at the old default of 90 no account is usable and holding
+        is correct, which is the sibling test below.
+        """
+        h = self._harness(temp_home, threshold=97.0)
+        outcome = h.tick_with_usage({
+            "1": _usage7(48, 28, _at(157)),
+            "2": _usage7(0, 90, _at(121)),
+            "3": _usage7(90, 51, _at(20)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 3
+        switch = next(e for e in h.events if isinstance(e, SwitchEvent))
+        assert switch.trigger == "waste-first"
+
+    def test_holds_when_no_expiring_account_is_usable(self, temp_home):
+        """Same fleet at the default threshold of 90: #2 and #3 are both AT the
+        threshold, so neither is a landing that would survive the next tick.
+        Holding is the correct answer, and it must be reported as a considered
+        outcome rather than a block."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(48, 28, _at(157)),
+            "2": _usage7(0, 90, _at(121)),
+            "3": _usage7(90, 51, _at(20)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == [
+            "already-burning-soonest"
+        ]
+
+    def test_soonest_reset_loses_to_a_bigger_loss_further_out(self, temp_home):
+        """Where waste-first and consume-first genuinely disagree. #2 resets
+        first but has 2 points to lose (0.4 %/h); #3 resets later holding 60
+        (3.0 %/h). consume-first takes #2 on the deadline alone and rescues
+        almost nothing."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 10, _at(160)),
+            "2": _usage7(10, 98, _at(5)),
+            "3": _usage7(10, 40, _at(20)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 3
+
+    def test_does_not_chase_a_marginally_more_urgent_peer(self, temp_home):
+        """The ratio margin. #2 is more urgent than #1 but only slightly, and a
+        switch that trades one near-identical deadline for another is pure
+        churn."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 50, _at(100)),
+            "2": _usage7(10, 49, _at(98)),
+            "3": _usage7(10, 50, _at(101)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_absolute_floor_blocks_a_move_the_ratio_would_allow(self, temp_home):
+        """The floor, isolated from the ratio. #2 is 1.33x as urgent as #1, so
+        the ratio margin alone would take it — but 0.09 %/h is under 16 points
+        across a whole week, which is not worth a switch. Both accounts stay
+        below the threshold, so this is the deadline axis deciding, not an
+        escape."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 89, _at(160)),   # 11 pts / 160h = 0.069 %/h
+            "2": _usage7(10, 89, _at(120)),   # 11 pts / 120h = 0.092 %/h
+            "3": _usage7(10, 89, _at(130)),   # 11 pts / 130h = 0.085 %/h
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == [
+            "already-burning-soonest"
+        ]
+
+    def test_unknown_active_deadline_still_rescues_measurable_quota(
+        self, temp_home
+    ):
+        """An unreadable deadline is not a reason to let a readable one expire.
+        #1 reports no weekly reset, so it has no claim to be defended; #2 is
+        provably losing 3 %/h and moving there rescues real quota, while
+        holding rescues nothing."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 10),
+            "2": _usage7(10, 40, _at(20)),
+            "3": _usage7(10, 10, _at(160)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_unknown_active_deadline_is_named_when_nothing_qualifies(
+        self, temp_home
+    ):
+        """Holding without a baseline is reported as its own reason: it clears
+        itself once the API reports a reset, unlike a real verdict over a
+        readable fleet."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 10),
+            "2": _usage7(10, 89, _at(160)),
+            "3": _usage7(10, 89, _at(160)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == [
+            "reset-unknown"
+        ]
+
+    def test_candidate_with_no_deadline_is_never_urgent(self, temp_home):
+        """Unschedulable is not urgent. #2 has plenty of headroom but no known
+        reset, so it can never be the account 'about to lose' anything."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 50, _at(100)),
+            "2": _usage7(10, 5),
+            "3": _usage7(10, 60, _at(150)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_escape_above_threshold_still_honours_the_landing_margin(
+        self, temp_home
+    ):
+        """Above the threshold the trigger is an ESCAPE, and a 9-point-better
+        landing is a flap however perishable its quota is. The deadline axis
+        must not disable the hysteresis margin that guards it."""
+        h = self._harness(temp_home, cooldown_seconds=0.0)
+        outcome = h.tick_with_usage({
+            "1": _usage7(95, 10, _at(160)),
+            "2": _usage7(86, 40, _at(20)),
+            "3": _usage7(86, 40, _at(20)),
+        })
+        assert outcome is TickOutcome.BLOCKED
+        assert h.active_number() == 1
+
+    def test_escape_above_threshold_prefers_the_expiring_landing(self, temp_home):
+        """Among landings that DO clear the margin, the most perishable wins —
+        the margin gates the move, the risk axis orders it."""
+        h = self._harness(temp_home, cooldown_seconds=0.0)
+        outcome = h.tick_with_usage({
+            "1": _usage7(95, 10, _at(160)),
+            "2": _usage7(20, 20, _at(160)),
+            "3": _usage7(20, 60, _at(20)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 3
+
+    def test_five_hour_window_is_not_perishable(self, temp_home):
+        """A 5-hour window recycles, so quota left in it is never wasted. Only
+        the weekly axis may drive a below-threshold move."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(10, 20, _at(100)),
+            "2": _usage7(80, 20, _at(100)),
+            "3": _usage7(80, 20, _at(100)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1

@@ -174,7 +174,7 @@ class TestConfigValidation:
     def test_bad_strategy_exits_1(self, temp_home, capsys):
         code, _, err = _run(["set", "autoswitch.strategy", "chaos"], capsys)
         assert code == 1
-        assert "must be one of: best" in err
+        assert "must be one of: waste-first" in err
 
     def test_unknown_key_json_error_envelope(self, temp_home, capsys):
         code, out, _ = _run(["--json", "get", "autoswitch.bogus"], capsys)

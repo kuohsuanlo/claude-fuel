@@ -230,7 +230,7 @@ AddTokenModal Input {
     height: auto;
 }
 #fleet-status {
-    height: 1;
+    height: auto;
     padding: 0 1;
     margin-top: 1;
 }

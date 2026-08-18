@@ -40,7 +40,8 @@ from claude_swap.settings import (
     parse_account_weights,
     save_settings,
 )
-from claude_swap.tui import data
+from claude_swap.tui import data, pets
+from claude_swap.tui.sprite import render as render_sprite
 from claude_swap.tui.theme import Palette
 
 if TYPE_CHECKING:
@@ -86,31 +87,6 @@ _BAR_MIN = 12
 _BAR_MAX = 36
 
 
-# A small machine that drinks fuel. It exists to answer a question the numbers
-# cannot: is this thing actually running? A screen of static figures looks
-# identical whether it is measuring every second or wedged, and the whole
-# premise here is a second-by-second instrument. So the animation is tied to
-# the same tick that recomputes the numbers — if it moves, the measurement is
-# live.
-#
-# Two states, because the tool has two: WATCHING keeps its hands to itself and
-# only blinks; WORKING holds a spanner and has fuel flowing into it. The
-# difference is visible from across the room, which matters for a mode that
-# can change your active account on its own.
-_CRITTER_WATCH = (
-    r"   [o_o]",
-    r"   [o_o]",
-    r"   [-_-]",
-    r"   [o_o]",
-)
-_CRITTER_WORK = (
-    r"≈≈≈[o_o]╾╼",
-    r" ≈≈[o_o]╾╼",
-    r"  ≈[o_o]╾╼",
-    r"   [O_O]╾╼",
-)
-
-
 class FleetScreen(Screen):
     """The single-screen fleet view."""
 
@@ -124,7 +100,6 @@ class FleetScreen(Screen):
         Binding("enter", "confirm", "Confirm"),
         Binding("r", "apply_recommended", "Use suggested"),
         Binding("h", "toggle_status", "Hide log"),
-        Binding("f", "app.refresh_full", "Refresh usage"),
         Binding("q", "app.quit", "Quit"),
     ]
 
@@ -415,17 +390,33 @@ class FleetScreen(Screen):
         self._render_status(Palette.from_theme(self.app.current_theme))
 
     def _render_status(self, palette: Palette) -> None:
-        """The creature, then the single most recent thing that happened."""
-        frames = _CRITTER_WORK if self._armed else _CRITTER_WATCH
+        """The pet, with the single most recent event spoken beside it.
+
+        The event text sits on ONE row of the sprite rather than under it, so
+        the block stays the sprite's own height whether the log is shown or
+        hidden — a layout that changed height on `h` would shift everything
+        above it and make the key feel like it broke something.
+        """
+        sprite = pets.WORKING if self._armed else pets.WATCHING
+        rows = render_sprite(sprite, self._frame, dim=not self._armed)
+        speech = self._status_line(palette) if self._show_log else None
+        # Beside the middle row: it reads as the pet saying it, and it keeps
+        # the text clear of the head and the feet.
+        speech_row = len(rows) // 2
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append(
-            frames[self._frame % len(frames)],
-            style=palette.accent if self._armed else palette.muted,
-        )
-        if not self._show_log:
-            self._update_status(text)
-            return
-        text.append("  ")
+        for index, row in enumerate(rows):
+            if index:
+                text.append("\n")
+            text.append("  ")
+            text.append(row)
+            if speech is not None and index == speech_row:
+                text.append("   ")
+                text.append(speech)
+        self._update_status(text)
+
+    def _status_line(self, palette: Palette) -> Text:
+        """The latest engine event, or what the screen is doing instead."""
+        text = Text(no_wrap=True, overflow="ellipsis")
         if self._latest is not None:
             style = (
                 f"bold {palette.accent}"
@@ -440,10 +431,10 @@ class FleetScreen(Screen):
             text.append(self._note, style=palette.muted)
         else:
             text.append(
-                "watching" if not self._armed else "auto-switching armed",
+                "auto-switching armed" if self._armed else "watching only",
                 style=palette.muted,
             )
-        self._update_status(text)
+        return text
 
     def _update_status(self, text: Text) -> None:
         try:

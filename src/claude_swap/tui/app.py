@@ -24,6 +24,7 @@ from claude_swap.settings import load_settings, load_ui_settings, set_setting
 from claude_swap.switcher import ClaudeAccountSwitcher
 from claude_swap.tui.autoview import AutoScreen
 from claude_swap.tui.dashboard import DashboardScreen, WatchScreen
+from claude_swap.tui.fleetview import FleetScreen
 from claude_swap.tui.data import ActionResult, SnapshotSource, format_duration, run_action
 from claude_swap.tui.modals import AddTokenModal, ConfirmModal, OutputModal, TokenForm
 from claude_swap.tui.theme import CSWAP_DARK, CSWAP_LIGHT
@@ -59,7 +60,7 @@ class CswapApp(App):
     ) -> None:
         super().__init__()
         self.switcher = switcher
-        self._start = start  # "dashboard" | "watch" (`cswap watch`)
+        self._start = start  # "dashboard" | "watch" | "fleet" (`cfuel`)
         self._detected = detected  # terminal background sensed pre-driver, or None
         self.source = SnapshotSource(switcher)
         self._store_only = False
@@ -90,10 +91,17 @@ class CswapApp(App):
         # We own the theme; $TEXTUAL_THEME is intentionally not honoured.
         self.theme = f"cswap-{resolved}"
         printer.set_theme(resolved)
-        self.push_screen(DashboardScreen())
-        if self._start == "watch":
-            # Stacked over the dashboard so Esc lands there, not on exit.
-            self.push_screen(WatchScreen())
+        if self._start == "fleet":
+            # The `cfuel` entry point is a SINGLE screen, not a page stacked
+            # over the dashboard: there is nothing to go back to, and a hidden
+            # dashboard underneath would keep its own poller alive competing
+            # with the engine for the same usage budget.
+            self.push_screen(FleetScreen())
+        else:
+            self.push_screen(DashboardScreen())
+            if self._start == "watch":
+                # Stacked over the dashboard so Esc lands there, not on exit.
+                self.push_screen(WatchScreen())
         self.set_interval(self.POLL_INTERVAL_S, self._tick)
         self.set_interval(1.0, self._update_refresh_status)
         self._tick()

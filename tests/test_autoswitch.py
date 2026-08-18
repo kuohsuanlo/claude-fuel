@@ -7099,3 +7099,100 @@ class TestWasteFirstStrategy:
         })
         assert outcome is TickOutcome.NO_ACTION
         assert h.active_number() == 1
+
+
+class TestBurstGuard:
+    """The measured burn rate may pull the trigger EARLIER, never later.
+
+    A configured threshold is a position, and the usage endpoint's budget
+    allows a sample only every few minutes — long enough for a heavy turn to
+    cross ten points. The guard converts the position into one the current
+    rate can survive, which is what makes a 99% threshold usable.
+    """
+
+    class _Burn:
+        """Stands in for the transcript-backed tracker."""
+
+        def __init__(self, recommended: float | None):
+            self._recommended = recommended
+            self.sensor = self
+            self.observed: list[tuple[str, float, float]] = []
+
+        def poll(self) -> None:
+            pass
+
+        def observe(self, account, pct, fetched_at) -> None:
+            self.observed.append((account, pct, fetched_at))
+
+        def estimate(self, _account):
+            from claude_swap.burn import BurnEstimate
+
+            if self._recommended is None:
+                return BurnEstimate()
+            # Invert recommended_threshold() so the engine sees exactly the
+            # value this fixture names.
+            from claude_swap.burn import BURST_MULTIPLIER, BURST_WINDOW_S
+
+            rate = (100.0 - self._recommended) / (BURST_MULTIPLIER * BURST_WINDOW_S)
+            return BurnEstimate(pct_per_s=rate, source="local", calibrated=True)
+
+    def _harness(self, temp_home: Path, recommended: float | None, **kw):
+        h = EngineHarness(temp_home, strategy="best", threshold=99.0, **kw)
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        h.make_live("a@example.com", 1)
+        h.engine._burn = self._Burn(recommended)
+        return h
+
+    def test_fast_burn_switches_below_the_configured_threshold(self, temp_home):
+        """95% used against a 99% threshold would normally hold. At a rate that
+        can cross four points before the next poll, holding is how a limit is
+        hit mid-turn."""
+        h = self._harness(temp_home, recommended=90.0)
+        outcome = h.tick_with_usage({"1": _usage(95), "2": _usage(5)})
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_slow_burn_leaves_the_configured_threshold_alone(self, temp_home):
+        """The guard takes the LOWER of the two, so a calm machine cannot have
+        its threshold raised above what the user set."""
+        h = self._harness(temp_home, recommended=99.9)
+        outcome = h.tick_with_usage({"1": _usage(95), "2": _usage(5)})
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_unmeasured_rate_does_not_move_the_threshold(self, temp_home):
+        h = self._harness(temp_home, recommended=None)
+        assert h.tick_with_usage({"1": _usage(95), "2": _usage(5)}) is (
+            TickOutcome.NO_ACTION
+        )
+
+    def test_disabled_guard_ignores_the_rate_entirely(self, temp_home):
+        h = self._harness(temp_home, recommended=50.0, burst_guard=False)
+        h.engine._burn = None  # what the constructor does when the guard is off
+        assert h.tick_with_usage({"1": _usage(95), "2": _usage(5)}) is (
+            TickOutcome.NO_ACTION
+        )
+
+    def test_guard_is_off_by_configuration_at_construction(self, temp_home):
+        h = EngineHarness(temp_home, burst_guard=False)
+        assert h.engine._burn is None
+
+    def test_readings_are_fed_to_the_tracker(self, temp_home):
+        """Calibration needs the same percentages the decision uses."""
+        h = self._harness(temp_home, recommended=99.9)
+        h.tick_with_usage({"1": _usage(40), "2": _usage(5)})
+        assert any(account == "1" for account, _, _ in h.engine._burn.observed)
+
+    def test_sensor_failure_never_breaks_a_tick(self, temp_home):
+        """Burn sensing is an optimisation; a switcher that stops switching
+        because a transcript could not be read is a worse failure than a
+        missed early switch."""
+        class Exploding(self._Burn):
+            def poll(self):
+                raise OSError("transcript unreadable")
+
+        h = self._harness(temp_home, recommended=90.0)
+        h.engine._burn = Exploding(90.0)
+        outcome = h.tick_with_usage({"1": _usage(95), "2": _usage(5)})
+        assert outcome is TickOutcome.NO_ACTION  # falls back to the configured 99

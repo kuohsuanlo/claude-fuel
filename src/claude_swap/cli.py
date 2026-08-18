@@ -642,6 +642,15 @@ Defaults live in settings.json in the backup root; flags override them.
         ),
     )
     parser.add_argument(
+        "--burst-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Let the measured burn rate trigger a switch before the threshold "
+            "is reached, so a burst cannot cross it between polls (default: on)"
+        ),
+    )
+    parser.add_argument(
         "--include-api-key-accounts",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -902,6 +911,40 @@ def _use_native_tls() -> None:
         truststore.inject_into_ssl()
     except Exception:
         pass
+
+
+def fleet_main() -> None:
+    """Entry point for ``cfuel``: open the fleet view and nothing else.
+
+    Its own console script rather than a ``cswap`` subcommand because it is
+    the whole interface for a different question — "what am I about to waste,
+    and how fast am I burning?" — and typing one word to get an answer is the
+    point. It takes no arguments on purpose: everything it can do is a
+    keystroke away once it is up, and every setting it changes is written to
+    the same settings.json ``cswap auto`` reads.
+    """
+    force_utf8_output()
+    _use_native_tls()
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        error("cfuel is an interactive view; it needs a terminal.")
+        sys.exit(1)
+    try:
+        switcher = ClaudeAccountSwitcher()
+        if sys.platform != "win32":
+            if os.geteuid() == 0 and not switcher._is_running_in_container():
+                error(
+                    "Error: Do not run this script as root "
+                    "(unless running in a container)"
+                )
+                sys.exit(1)
+        from claude_swap.tui import run as tui_run
+
+        sys.exit(tui_run(switcher, start="fleet"))
+    except ClaudeSwitchError as e:
+        error(f"Error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 def main() -> None:

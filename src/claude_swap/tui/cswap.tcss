@@ -203,3 +203,34 @@ ConfirmModal, AddTokenModal, OutputModal {
 AddTokenModal Input {
     margin-bottom: 1;
 }
+
+/* -- fleet view (cfuel) ------------------------------------------------- */
+/* The bar and its legend are one visual unit: no gap between them, so a
+   deadline reads as belonging to the segment directly above it. */
+#fleet-top {
+    height: auto;
+    padding: 1 1 0 1;
+}
+#fleet-headline {
+    height: 1;
+    margin-bottom: 1;
+}
+#fleet-bar {
+    height: 1;
+}
+#fleet-legend {
+    height: 1;
+    margin-bottom: 1;
+}
+#fleet-burn {
+    height: 1;
+    margin-bottom: 1;
+}
+#fleet-accounts {
+    height: auto;
+}
+#fleet-log {
+    height: 1fr;
+    padding: 0 1;
+    border-top: solid $panel;
+}

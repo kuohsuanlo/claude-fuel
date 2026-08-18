@@ -318,8 +318,17 @@ class TranscriptBurnSensor:
     # -- read ---------------------------------------------------------------
 
     def tokens_since(self, since_ts: float) -> float:
-        """Weighted tokens recorded at or after ``since_ts``."""
-        return sum(w for ts, w in self._samples if ts >= since_ts)
+        """Weighted tokens recorded strictly AFTER ``since_ts``.
+
+        Half-open on purpose. Consecutive calibration intervals share an
+        endpoint — one ends at an observation, the next begins at it — so
+        counting the boundary instant in both charges the same tokens twice
+        and inflates percent-per-token. Measured with two back-to-back
+        brackets of 1000 tokens each, an inclusive bound reported the second
+        account as consuming 2000 and halved its calibrated scale, which
+        understates its burn: the direction that overshoots a threshold.
+        """
+        return sum(w for ts, w in self._samples if ts > since_ts)
 
     def tokens_per_s(self, window_s: float = INSTANT_WINDOW_S) -> float:
         """Weighted tokens per second over the trailing ``window_s``.
@@ -347,6 +356,11 @@ class BurnEstimate:
     source: str | None = None  # "local" | "api"
     calibrated: bool = False
     seconds_to_threshold: float | None = None
+    # Local weighted tokens per second. Known from the first display tick,
+    # long before percent is: reported separately so an uncalibrated view can
+    # still show that work IS happening (and how much), rather than an
+    # indefinite "measuring…" that looks like a hung instrument.
+    tokens_per_s: float = 0.0
 
     @property
     def seconds_per_pct(self) -> float | None:
@@ -392,8 +406,15 @@ class BurnTracker:
     # account number -> (epoch, binding pct) of the two most recent DISTINCT
     # observations, oldest first.
     _observations: dict[str, deque[tuple[float, float]]] = field(default_factory=dict)
-    # Bracketed (delta pct, delta weighted tokens) pairs, newest last.
-    _calibration: deque[tuple[float, float]] = field(default_factory=deque)
+    # account number -> bracketed (delta pct, delta weighted tokens) pairs.
+    #
+    # PER ACCOUNT, because percent is a fraction of a PLAN'S window and plans
+    # differ: the same 100k tokens is a far smaller share of a 20x window than
+    # of a Pro one. Pooling them would scale every account by the fleet's
+    # average plan, quietly overstating the burn on the large accounts and
+    # understating it on the small ones — and understating it is the direction
+    # that lets a threshold be overshot.
+    _calibration: dict[str, deque[tuple[float, float]]] = field(default_factory=dict)
 
     def observe(self, account: str, pct: float | None, fetched_at: float) -> None:
         """Record one API-derived utilization reading for ``account``.
@@ -432,34 +453,99 @@ class BurnTracker:
             # attributable to local tokens — excluded from calibration so the
             # ratio stays a property of THIS machine's transcripts.
             return
-        self._calibration.append((delta_pct, delta_tokens))
-        while len(self._calibration) > _CALIBRATION_SAMPLES:
-            self._calibration.popleft()
+        samples = self._calibration.setdefault(account, deque())
+        samples.append((delta_pct, delta_tokens))
+        while len(samples) > _CALIBRATION_SAMPLES:
+            samples.popleft()
 
-    def pct_per_token(self) -> float | None:
+    def pct_per_token(self, account: str | None = None) -> float | None:
         """Calibrated percent-per-weighted-token, or None before first bracket.
 
         Ratio of the SUMS rather than the mean of the ratios: intervals differ
         in length by an order of magnitude, and a mean of ratios would weight
         a 20-second interval the same as a 10-minute one.
+
+        With no samples for ``account`` yet, falls back to the pooled ratio
+        across every account that HAS been calibrated. On the common
+        same-plan fleet that is the right number immediately; on a mixed-plan
+        one it is an approximation that a single bracketed interval on this
+        account replaces. Both beat reporting nothing, which is what a fresh
+        account would otherwise show for its first few minutes.
         """
-        if not self._calibration:
+        samples: list[tuple[float, float]] = []
+        if account is not None:
+            samples = list(self._calibration.get(account, ()))
+        if not samples:
+            for pairs in self._calibration.values():
+                samples.extend(pairs)
+        if not samples:
             return None
-        total_pct = sum(d for d, _ in self._calibration)
-        total_tokens = sum(t for _, t in self._calibration)
+        total_pct = sum(d for d, _ in samples)
+        total_tokens = sum(t for _, t in samples)
         if total_tokens <= 0:
             return None
         return total_pct / total_tokens
+
+    # -- persistence --------------------------------------------------------
+
+    def calibration_state(self) -> dict:
+        """JSON-safe calibration, for carrying the scale across restarts.
+
+        Without this every launch is blind for as long as it takes two API
+        polls to bracket some local spend — minutes at the endpoint's budgeted
+        cadence, which is exactly the window a user opens the view to watch.
+        The ratio is a property of the plan, not of the process, so it is
+        worth keeping.
+        """
+        return {
+            "schemaVersion": 1,
+            "accounts": {
+                account: [[d, t] for d, t in pairs]
+                for account, pairs in self._calibration.items()
+                if pairs
+            },
+        }
+
+    def restore_calibration(self, state: object) -> None:
+        """Load :meth:`calibration_state` output. Malformed input is ignored.
+
+        Forgiving on purpose: a corrupt cache file must cost the freshness of
+        one estimate, never the view. Anything unparseable simply leaves the
+        tracker uncalibrated, which is the state it would have been in anyway.
+        """
+        if not isinstance(state, dict):
+            return
+        accounts = state.get("accounts")
+        if not isinstance(accounts, dict):
+            return
+        for account, pairs in accounts.items():
+            if not isinstance(account, str) or not isinstance(pairs, list):
+                continue
+            restored: deque[tuple[float, float]] = deque()
+            for pair in pairs[-_CALIBRATION_SAMPLES:]:
+                if (
+                    isinstance(pair, (list, tuple))
+                    and len(pair) == 2
+                    and all(isinstance(v, (int, float)) for v in pair)
+                    and not any(isinstance(v, bool) for v in pair)
+                    and pair[1] > 0
+                ):
+                    restored.append((float(pair[0]), float(pair[1])))
+            if restored:
+                self._calibration[account] = restored
 
     def estimate(
         self, account: str, *, window_s: float = INSTANT_WINDOW_S
     ) -> BurnEstimate:
         """Current burn rate for ``account``, best instrument available."""
-        k = self.pct_per_token()
+        tokens_per_s = self.sensor.tokens_per_s(window_s)
+        k = self.pct_per_token(account)
         if k is not None:
-            tokens_per_s = self.sensor.tokens_per_s(window_s)
             return BurnEstimate(
-                pct_per_s=k * tokens_per_s, source="local", calibrated=True
+                pct_per_s=k * tokens_per_s,
+                source="local",
+                calibrated=True,
+                tokens_per_s=tokens_per_s,
             )
         history = self._observations.get(account)
         if history and len(history) == 2:
@@ -467,9 +553,12 @@ class BurnTracker:
             span = t1 - t0
             if span > 0 and p1 >= p0:
                 return BurnEstimate(
-                    pct_per_s=(p1 - p0) / span, source="api", calibrated=False
+                    pct_per_s=(p1 - p0) / span,
+                    source="api",
+                    calibrated=False,
+                    tokens_per_s=tokens_per_s,
                 )
-        return BurnEstimate()
+        return BurnEstimate(tokens_per_s=tokens_per_s)
 
     def project(
         self, pct: float | None, estimate: BurnEstimate, threshold: float

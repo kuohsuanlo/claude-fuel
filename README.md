@@ -1,6 +1,78 @@
-# claude-swap
+# claude-swap-Reloaded
+
+> A fork of [realiti4/claude-swap](https://github.com/realiti4/claude-swap) that
+> makes the switcher **deadline-aware** and **burst-aware**. See
+> [What this fork adds](#what-this-fork-adds).
 
 Multi-account switcher for Claude Code. Easily switch between multiple Claude accounts without logging out, or let it switch for you before you hit a rate limit. Track usage for every account in a live dashboard, and run accounts in parallel. Works with both the Claude Code CLI and the VS Code extension.
+
+## What this fork adds
+
+### `cfuel` — the whole fleet on one line
+
+One command, one screen. It answers the two questions the account list makes you
+work out by hand: *what am I about to waste*, and *am I about to hit a wall*.
+
+```
+47 points expire within 24h    AUTO OFF    switch at 90%
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│██████│████████████████████████████████████████
+dev5 8/19 14:00 (19h)                  5d     ▲ dev 8/25 07:00 (6d)
+burn  0.05%/100s  ·  1% every 21s  ·  calibrated     suggested threshold 90%
+ 3 dev5@example.com   100% used (5h)   47 pts expire 8/19 14:00 (19h) · blocked
+ 2 dev4@example.com    92% used (7d)    8 pts expire 8/23 19:00 (5d)
+▸1 dev@example.com     32% used (7d)   68 pts expire 8/25 07:00 (6d)
+```
+
+The bar is every account's **unspent weekly quota**, laid out **soonest deadline
+first** — left to right is the order it should be spent in. Segment width is how
+much is at stake, color is how urgent, `▓` means the quota is there but the
+account's short-term window is spent, and `▲` marks the account you are on.
+The 5-hour window is deliberately absent from it: quota left in a window that
+recycles today is never wasted.
+
+Keys: `a` arms or disarms auto-switching, `t` then `←`/`→` sets the threshold
+(**written to settings.json**, not just for this session), `r` adopts the
+suggested threshold, `f` forces a usage refresh, `q` quits.
+
+**Arming only controls whether it switches.** The display keeps measuring either
+way, so it works as a passive gauge before you trust it with your accounts.
+
+### `waste-first` — the default strategy
+
+Ranks accounts by *quota about to expire*: weekly headroom divided by hours
+until that window resets. The upstream default, `best`, ranks by how much is
+left — which reliably parks on the account holding the **longest** deadline,
+i.e. the quota in the least danger of being wasted.
+
+Measured on a real fleet: 49 points expiring in 20 hours scored 2.4 %/h against
+the active account's 0.46 %/h. `best` sat on the active account until those 49
+points expired. `consume-first` ranks on the deadline alone, so it will happily
+move to an account that resets sooner but has 2 points left to rescue.
+
+The deadline axis only applies *below* the threshold. Above it a switch is an
+escape, where the question is whether a landing is worth the move — so the
+hysteresis margin still gates it and the deadline only orders the candidates
+that clear it.
+
+### Burst guard — what makes a 99% threshold usable
+
+The usage endpoint allows roughly 28-30 requests per rolling hour, so the
+fastest honest sample of your utilization is one point every three minutes. A
+heavy parallel turn crosses ten points in that time. A threshold is a
+*position*, and a position set where the average looks safe is passed before
+the next sample lands.
+
+So the burn rate is measured locally instead, from Claude Code's own transcripts
+(`~/.claude/projects/**/*.jsonl`), which carry each request's token counts and
+cost nothing to read. Tokens are not percent, so the scale is **calibrated**
+against the API samples that do arrive — never assumed — and the ratio is kept
+per account, because the same tokens are a different share of a different plan's
+window. Calibration is cached, so a restart is not blind.
+
+The effective trigger becomes the lower of your threshold and the value the
+current rate can survive (by default, a burst of 2x for 10 seconds). It can only
+ever switch *earlier* than you asked. Turn it off with `--no-burst-guard` or
+`cswap config set autoswitch.burstGuard false`.
 
 ## Installation
 
@@ -77,6 +149,11 @@ cswap list
 ```
 
 Or let claude-swap auto-pick by remaining quota — `cswap switch --strategy best` (most quota left) or `--strategy next-available` (skip rate-limited accounts).
+
+For the auto-switch loop the strategies are `waste-first` (the default in this
+fork — spend what expires soonest), `consume-first` (soonest weekly reset,
+regardless of how much is left), and `best` (most quota left, deadlines
+ignored).
 
 **Note:** You usually don't need to restart — on Linux/Windows the new account is picked up automatically, and on macOS after the Keychain cache expires. To apply it instantly, restart Claude Code or reopen the VS Code extension tab. See [Tips](#tips) for the per-platform details.
 

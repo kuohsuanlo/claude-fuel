@@ -55,6 +55,14 @@ class AutoSwitchSettings:
     # "most left" reliably parks on the account with the LONGEST deadline,
     # which is exactly the quota least in danger of being wasted.
     strategy: str = "waste-first"
+    # Let the measured burn rate pull the trigger EARLIER when quota is being
+    # spent fast. `threshold` alone is a position, and a position is the wrong
+    # thing to defend against a burst: a heavy parallel turn can cross ten
+    # points between two budgeted API polls, so a threshold chosen where the
+    # average looks safe is overshot before the next sample lands. With this
+    # on, the effective trigger is the lower of `threshold` and the value the
+    # current rate can survive — which is what makes a 99% threshold usable.
+    burst_guard: bool = True
     include_api_key_accounts: bool = False
     unhealthy_ticks: int = 3
     # Comma-separated model display name(s) (e.g. "Fable" or "Fable,Opus"),
@@ -129,6 +137,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
             "autoswitch", "strategy", "strategy", "choice",
             choices=("waste-first", "consume-first", "best"),
             help="How auto-switch picks the target account",
+        ),
+        SettingSpec(
+            "autoswitch", "burstGuard", "burst_guard", "bool",
+            help="Let the measured burn rate trigger a switch before the threshold",
         ),
         SettingSpec(
             "autoswitch", "includeApiKeyAccounts", "include_api_key_accounts", "bool",
@@ -436,6 +448,7 @@ def merged_with_cli(settings: AutoSwitchSettings, args) -> AutoSwitchSettings:
         ("interval", "interval_seconds"),
         ("cooldown", "cooldown_seconds"),
         ("include_api_key_accounts", "include_api_key_accounts"),
+        ("burst_guard", "burst_guard"),
         ("model", "model"),
         ("strategy", "strategy"),
     ):

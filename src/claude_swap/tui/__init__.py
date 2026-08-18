@@ -18,7 +18,9 @@ def run(switcher: "ClaudeAccountSwitcher", start: str = "dashboard") -> int:
     """Run the TUI over an existing switcher. Returns the process exit code.
 
     ``start="watch"`` (the ``cswap watch`` command) opens directly on the
-    live watch page, stacked over the dashboard.
+    live watch page, stacked over the dashboard. ``start="fleet"`` (the
+    ``cfuel`` command) opens the single-screen fleet view instead, with no
+    dashboard underneath.
     """
     from claude_swap.appearance import detect_terminal_background, drain_stdin
     from claude_swap.tui.app import CswapApp

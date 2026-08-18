@@ -9,6 +9,7 @@ flows) — no scraping, no real credentials, no network.
 from __future__ import annotations
 
 import asyncio
+import collections
 import dataclasses
 import json
 import sys
@@ -1710,3 +1711,202 @@ class TestThemeWiring:
             assert app._theme_name == "light"
             assert app.theme == "cswap-light"
 
+
+
+@pytest.fixture
+def fake_fleet_engine(monkeypatch):
+    _FakeEngine.instances = []
+    monkeypatch.setattr(
+        "claude_swap.tui.fleetview.AutoSwitchEngine", _FakeEngine
+    )
+    return _FakeEngine
+
+
+def _fleet_app(fake):
+    from claude_swap.tui.app import CswapApp
+
+    return CswapApp(fake, start="fleet")
+
+
+@pytest.mark.asyncio
+class TestFleetScreen:
+    """`cfuel`: one screen, deadline-ordered, live whether armed or not."""
+
+    @staticmethod
+    def _text(app, selector: str) -> str:
+        """Rendered text of one Static, however Textual spells the accessor.
+
+        `renderable` was the attribute; newer Textual keeps the value on
+        `_renderable` and exposes `render()`. Reading through `render()` is
+        the version-stable spelling and is what the widget actually paints.
+        """
+        from textual.widgets import Static
+
+        rendered = app.screen.query_one(selector, Static).render()
+        return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+    def _fleet(self, tmp_path):
+        # #1 active and comfortable; #2 holds a lot that expires soonest.
+        return FakeSwitcher(
+            [
+                make_account(1, active=True, entry=make_entry(48.0, 28.0)),
+                make_account(2, entry=make_entry(10.0, 40.0)),
+            ],
+            tmp_path,
+        )
+
+    async def test_opens_directly_with_no_dashboard_underneath(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A hidden dashboard would keep its own poller alive competing with
+        the engine for the same rate-limited usage budget."""
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            from claude_swap.tui.fleetview import FleetScreen
+
+            assert isinstance(app.screen, FleetScreen)
+            assert not any(
+                type(s).__name__ == "DashboardScreen" for s in app.screen_stack
+            )
+            assert app._store_only is True
+
+    async def test_starts_disarmed_but_still_running(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Disarmed is a dry-run engine, not a stopped one — the numbers move
+        and the log fills before anyone trusts it with a switch."""
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            assert len(fake_fleet_engine.instances) == 1
+            assert fake_fleet_engine.instances[0].dry_run is True
+            assert "AUTO OFF" in self._text(app, "#fleet-headline")
+
+    async def test_arming_requires_confirmation_and_relaunches_live(
+        self, tmp_path, fake_fleet_engine
+    ):
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            await pilot.press("a")
+            await pilot.pause()
+            from claude_swap.tui.modals import ConfirmModal
+
+            assert isinstance(app.screen, ConfirmModal)
+            await pilot.press("y")
+            await settle(pilot)
+            assert len(fake_fleet_engine.instances) == 2
+            assert fake_fleet_engine.instances[0].stopped is True
+            assert fake_fleet_engine.instances[1].dry_run is False
+
+    async def test_bar_orders_accounts_by_deadline(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """#2's quota expires first, so it is leftmost — the bar reads as the
+        order the quota should be spent in."""
+        fake = FakeSwitcher(
+            [
+                make_account(1, active=True, entry=make_entry(10.0, 20.0)),
+                make_account(2, entry=make_entry(10.0, 20.0)),
+            ],
+            tmp_path,
+        )
+        # Pull #2's weekly deadline in front of #1's.
+        soon = _iso_in(3600)
+        fake._accounts[1] = dataclasses.replace(
+            fake._accounts[1],
+            usage=UsageEntry(
+                last_good={
+                    "five_hour": {"pct": 10.0, "resets_at": _iso_in(7200)},
+                    "seven_day": {"pct": 20.0, "resets_at": soon},
+                },
+                fetched_at=time.time(),
+                age_s=1.0,
+            ),
+        )
+        app = _fleet_app(fake)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            legend = self._text(app, "#fleet-legend")
+            assert legend.index("user2") < legend.index("user1")
+
+    async def test_active_account_is_marked_on_the_bar(
+        self, tmp_path, fake_fleet_engine
+    ):
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            legend = self._text(app, "#fleet-legend")
+            assert "▲" in legend
+
+    async def test_threshold_edit_is_written_to_settings(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A threshold that reverted on exit would leave the user protected by
+        a number they had already rejected — the engine keeps running from
+        settings.json afterwards."""
+        from claude_swap.settings import load_settings
+
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            before = load_settings(tmp_path).threshold
+            await pilot.press("t")
+            await pilot.press("left")
+            await pilot.press("left")
+            await pilot.press("enter")
+            await settle(pilot)
+            assert load_settings(tmp_path).threshold == before - 2
+
+    async def test_accounts_collapse_to_one_line_each(
+        self, tmp_path, fake_fleet_engine
+    ):
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            rows = self._text(app, "#fleet-accounts")
+            lines = [line for line in rows.splitlines() if line.strip()]
+            assert len(lines) == 2
+            assert "user1@example.com" in lines[0] or "user1@example.com" in lines[1]
+
+    async def test_burn_readout_names_what_it_is_waiting_for(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A fresh machine has no calibration; the line must say what it is
+        waiting for rather than render a fabricated rate or an indefinite
+        "measuring…" that reads as a hang."""
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            burn = self._text(app, "#fleet-burn")
+            assert "calibrating" in burn or "idle" in burn or "%" in burn
+
+    async def test_calibration_survives_a_restart(self, tmp_path, fake_fleet_engine):
+        """Percent-per-token is a property of the plan, not of the process.
+        Without persistence every launch is blind for as long as it takes two
+        budgeted API polls to bracket some spend — minutes, which is exactly
+        the window someone opens this view to watch."""
+        import json
+
+        from claude_swap.burn import BurnTracker, TranscriptBurnSensor
+
+        seed = BurnTracker(sensor=TranscriptBurnSensor(tmp_path / "none"))
+        seed._calibration["1"] = collections.deque([(2.0, 1000.0)])
+        (tmp_path / "burn_calibration.json").write_text(
+            json.dumps(seed.calibration_state()), encoding="utf-8"
+        )
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            assert app.screen._tracker.pct_per_token("1") == pytest.approx(0.002)
+
+    async def test_corrupt_calibration_cache_does_not_break_the_view(
+        self, tmp_path, fake_fleet_engine
+    ):
+        (tmp_path / "burn_calibration.json").write_text("{not json", encoding="utf-8")
+        app = _fleet_app(self._fleet(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            assert app.screen._tracker.pct_per_token() is None
+            assert self._text(app, "#fleet-bar")

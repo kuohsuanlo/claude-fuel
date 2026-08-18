@@ -336,3 +336,119 @@ class TestProjection:
             sensor=TranscriptBurnSensor(projects, clock=clock), clock=clock
         )
         assert tracker.project(80.0, BurnEstimate(pct_per_s=0.0), 90.0) is None
+
+
+class TestPerAccountCalibration:
+    """Percent is a fraction of a PLAN's window, and plans differ."""
+
+    def _tracker(self, projects: Path, clock: FakeClock):
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        return BurnTracker(sensor=sensor, clock=clock), _session(projects)
+
+    def _bracket(self, tracker, path, clock, account, pct_from, pct_to, output):
+        tracker.observe(account, pct_from, clock.now)
+        clock.advance(60.0)
+        _append(path, _assistant_line(
+            message_id=f"{account}-{clock.now}", ts=clock.now, output=output))
+        tracker.sensor.poll()
+        tracker.observe(account, pct_to, clock.now)
+
+    def test_accounts_do_not_share_a_scale(self, projects: Path):
+        """A big-plan account and a small-plan one calibrate to different
+        ratios; pooling would understate the burn on one of them, and
+        understating is the direction that overshoots a threshold."""
+        clock = FakeClock()
+        tracker, path = self._tracker(projects, clock)
+        # #1: 1 pct per 1000 weighted tokens. #2: 4 pct for the same spend.
+        self._bracket(tracker, path, clock, "1", 10.0, 11.0, 200)
+        self._bracket(tracker, path, clock, "2", 10.0, 14.0, 200)
+        assert tracker.pct_per_token("1") == pytest.approx(0.001)
+        assert tracker.pct_per_token("2") == pytest.approx(0.004)
+
+    def test_uncalibrated_account_borrows_the_pooled_ratio(self, projects: Path):
+        """Better than reporting nothing for the first minutes of a new
+        account, and replaced the moment it brackets an interval of its own."""
+        clock = FakeClock()
+        tracker, path = self._tracker(projects, clock)
+        self._bracket(tracker, path, clock, "1", 10.0, 12.0, 200)
+        assert tracker.pct_per_token("2") == pytest.approx(0.002)
+
+    def test_own_samples_win_over_the_pool(self, projects: Path):
+        clock = FakeClock()
+        tracker, path = self._tracker(projects, clock)
+        self._bracket(tracker, path, clock, "1", 10.0, 12.0, 200)
+        self._bracket(tracker, path, clock, "2", 10.0, 18.0, 200)
+        assert tracker.pct_per_token("2") == pytest.approx(0.008)
+
+
+class TestCalibrationPersistence:
+    def test_round_trips(self, projects: Path):
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        original = BurnTracker(sensor=sensor, clock=clock)
+        original._calibration["1"] = __import__("collections").deque(
+            [(2.0, 1000.0), (1.0, 500.0)]
+        )
+        restored = BurnTracker(sensor=sensor, clock=clock)
+        restored.restore_calibration(original.calibration_state())
+        assert restored.pct_per_token("1") == original.pct_per_token("1")
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            None, "nope", {}, {"accounts": "nope"}, {"accounts": {"1": "nope"}},
+            {"accounts": {"1": [[1.0]]}},
+            {"accounts": {"1": [["a", "b"]]}},
+            {"accounts": {"1": [[1.0, 0.0]]}},   # zero tokens: undefined ratio
+            {"accounts": {"1": [[True, True]]}},  # bools are not measurements
+        ],
+    )
+    def test_malformed_state_leaves_it_uncalibrated(self, projects: Path, state):
+        """A corrupt cache must cost the freshness of one estimate, never the
+        view."""
+        tracker = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
+        tracker.restore_calibration(state)
+        assert tracker.pct_per_token() is None
+
+    def test_restore_is_bounded(self, projects: Path):
+        tracker = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
+        tracker.restore_calibration(
+            {"accounts": {"1": [[1.0, 100.0]] * 500}}
+        )
+        assert len(tracker._calibration["1"]) <= 24
+
+
+class TestTokenRateIsAlwaysAvailable:
+    def test_estimate_reports_tokens_before_percent_is_knowable(self, projects: Path):
+        """The token rate is known from the first tick; percent needs two API
+        samples. Reporting only percent leaves the view looking hung."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        path = _session(projects)
+        _append(path, _assistant_line(message_id="m1", ts=clock.now, output=120))
+        sensor.poll()
+        estimate = BurnTracker(sensor=sensor, clock=clock).estimate("1")
+        assert estimate.pct_per_s is None
+        assert estimate.tokens_per_s > 0
+
+
+class TestIntervalBoundary:
+    def test_consecutive_intervals_do_not_share_tokens(self, projects: Path):
+        """Intervals are half-open: one ends at an observation, the next begins
+        at it. Counting the boundary instant in both charged the same tokens
+        twice and halved the second account's calibrated scale — which
+        understates its burn, the direction that overshoots a threshold."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        path = _session(projects)
+        _append(path, _assistant_line(message_id="edge", ts=clock.now, output=100))
+        sensor.poll()
+        boundary = clock.now
+        assert sensor.tokens_since(boundary - 1) == pytest.approx(500.0)
+        assert sensor.tokens_since(boundary) == 0.0, (
+            "a token spent AT the boundary belongs to the interval that ended "
+            "there, not to the one starting there"
+        )

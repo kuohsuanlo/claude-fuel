@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from claude_swap import oauth, poll_policy
+from claude_swap.burn import BurnTracker, TranscriptBurnSensor
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
 from claude_swap.locking import FileLock
@@ -343,6 +344,10 @@ class PollEvent(AutoSwitchEvent):
     # (e.g. "89%") hides which window binds — #115 was reported off that
     # ambiguity.
     windows: dict[str, dict[str, float]] = field(default_factory=dict)
+    # The threshold the decision actually used, once the burst guard has had
+    # its say. Equal to `threshold` whenever the guard is off or nothing has
+    # been measured. Additive field.
+    effective_threshold: float | None = None
 
     def _fields(self) -> dict:
         fields = {
@@ -350,6 +355,11 @@ class PollEvent(AutoSwitchEvent):
             "headroomPct": self.headroom,
             "threshold": self.threshold,
         }
+        if (
+            self.effective_threshold is not None
+            and self.effective_threshold != self.threshold
+        ):
+            fields["effectiveThreshold"] = self.effective_threshold
         if self.fetch_errors:
             fields["fetchErrors"] = self.fetch_errors
         if self.windows:
@@ -382,9 +392,25 @@ class PollEvent(AutoSwitchEvent):
             if n != str(num)
         )
         tail = f" | others: {others}" if others else ""
+        switch_at = pct_label(self.threshold)
+        if (
+            self.effective_threshold is not None
+            and self.effective_threshold != self.threshold
+        ):
+            # Name both, and why: a reader who set 99 and sees 91 needs to know
+            # the number moved because of the measured burn, not because the
+            # setting was ignored.
+            switch_at = (
+                f"{pct_label(self.effective_threshold)}%, pulled in from "
+                f"{pct_label(self.threshold)}% by the burn rate"
+            ).rstrip("%")
+            return (
+                f"Account-{num} ({self.active.get('email')}): {used} "
+                f"(switch at {switch_at}){tail}"
+            )
         return (
             f"Account-{num} ({self.active.get('email')}): {used} "
-            f"(switch at {pct_label(self.threshold)}%){tail}"
+            f"(switch at {switch_at}%){tail}"
         )
 
 
@@ -581,6 +607,21 @@ def _weekly_windows(
     return [w for w in oauth.relevant_windows(usage, models) if w[0] != "5h"]
 
 
+def weekly_binding(
+    usage: dict | str | None, models: Sequence[str]
+) -> tuple[str, float, str | None] | None:
+    """The most-used perishable window: ``(label, pct, resets_at)`` or None.
+
+    The single place "which deadline is this account's deadline?" is answered,
+    so the strategy that ranks by it and the view that draws it can never
+    disagree about which window they mean.
+    """
+    windows = _weekly_windows(usage, models)
+    if not windows:
+        return None
+    return max(windows, key=lambda w: w[1])
+
+
 def waste_risk(
     usage: dict | str | None, models: Sequence[str], now: float
 ) -> float | None:
@@ -602,10 +643,10 @@ def waste_risk(
     A weekly window already at 100% returns 0.0 — a real measurement (nothing
     left to waste), not an absence of one.
     """
-    windows = _weekly_windows(usage, models)
-    if not windows:
+    binding = weekly_binding(usage, models)
+    if binding is None:
         return None
-    _label, pct, resets_at = max(windows, key=lambda w: w[1])
+    _label, pct, resets_at = binding
     reset_ts = _parse_reset_ts(resets_at)
     if reset_ts is None or reset_ts <= now:
         return None
@@ -764,6 +805,16 @@ class AutoSwitchEngine:
         # ``_idle_hold_slow`` is per-tick like ``_blocked_wait_long``.
         self._idle_hold_since: float | None = None
         self._idle_hold_slow = False
+        # Burn sensing, when the burst guard is on. Owned by the engine rather
+        # than passed in, so `cswap auto` in a terminal, a cron `--once`, and
+        # the TUI all get the same protection without any of them wiring it
+        # up. Costs no quota: it reads this machine's own transcripts.
+        self._burn: BurnTracker | None = None
+        if settings.burst_guard:
+            try:
+                self._burn = BurnTracker(sensor=TranscriptBurnSensor())
+            except Exception:  # pragma: no cover - unreadable home directory
+                self._burn = None
         # One-shot typo guard for ``autoswitch.model``: resolved (and possibly
         # warned) on the first tick where every relevant account has readable
         # usage — adaptive polling legitimately leaves gaps before that.
@@ -960,6 +1011,46 @@ class AutoSwitchEngine:
 
     # -- tick -----------------------------------------------------------------
 
+    def _effective_threshold(
+        self,
+        settings: AutoSwitchSettings,
+        entries: dict,
+        usage: dict[str, dict | str | None],
+        current: str,
+    ) -> float:
+        """The trigger to actually compare against, after the burst guard.
+
+        A configured threshold is a POSITION, and a position is the wrong
+        thing to defend with when the endpoint's budget allows a sample only
+        every few minutes: a heavy parallel turn crosses ten points between
+        two polls, so 99% is reached and passed without a tick in between.
+        The guard converts the position into one the CURRENT RATE can
+        survive — the same number the fleet view shows as "suggested" — and
+        takes whichever is lower. It can therefore only ever switch EARLIER
+        than asked, never later.
+
+        Returns the configured threshold unchanged when the guard is off or
+        nothing has been measured yet: an unmeasured rate must not silently
+        relax OR tighten a policy the user set.
+        """
+        if self._burn is None:
+            return settings.threshold
+        try:
+            self._burn.sensor.poll()
+            for number, entry in entries.items():
+                value = usage.get(number)
+                if not isinstance(value, dict) or entry.fetched_at is None:
+                    continue
+                headroom = oauth.account_headroom(value, self._models)
+                if headroom is not None:
+                    self._burn.observe(number, 100.0 - headroom, entry.fetched_at)
+            recommended = self._burn.estimate(current).recommended_threshold()
+        except Exception:  # pragma: no cover - sensing must never break a tick
+            return settings.threshold
+        if recommended is None:
+            return settings.threshold
+        return min(settings.threshold, recommended)
+
     def tick(self) -> TickOutcome:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
@@ -1021,11 +1112,19 @@ class AutoSwitchEngine:
         entries, usage, headroom = self._collect_scheduled_usage(
             current, quarantined, threshold=settings.threshold
         )
+        # Computed before the poll event so the line the user reads names the
+        # number the decision below actually uses. Reporting the configured
+        # threshold while triggering on a lower one is the kind of quiet
+        # disagreement that makes a log untrustworthy.
+        effective_threshold = self._effective_threshold(
+            settings, entries, usage, current
+        )
         self._emit(
             PollEvent(
                 active=active_ref,
                 headroom=headroom,
                 threshold=settings.threshold,
+                effective_threshold=effective_threshold,
                 fetch_errors={
                     num: entry.last_error
                     for num, entry in entries.items()
@@ -1061,7 +1160,7 @@ class AutoSwitchEngine:
             self._unhealthy_ticks = 0
             self._idle_hold_since = None
             utilization = 100.0 - active_headroom
-            if utilization < settings.threshold:
+            if utilization < effective_threshold:
                 if settings.strategy not in DEADLINE_STRATEGIES:
                     self._emit(
                         NoSwitchEvent(

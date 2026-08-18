@@ -6957,7 +6957,9 @@ class TestWasteFirstStrategy:
         """Same fleet at the default threshold of 90: #2 and #3 are both AT the
         threshold, so neither is a landing that would survive the next tick.
         Holding is the correct answer, and it must be reported as a considered
-        outcome rather than a block."""
+        outcome rather than a block — and specifically as quota that is
+        stranded rather than absent, since #3 is plainly the account bleeding
+        fastest."""
         h = self._harness(temp_home)
         outcome = h.tick_with_usage({
             "1": _usage7(48, 28, _at(157)),
@@ -6966,9 +6968,9 @@ class TestWasteFirstStrategy:
         })
         assert outcome is TickOutcome.NO_ACTION
         assert h.active_number() == 1
-        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == [
-            "already-burning-soonest"
-        ]
+        events = [e for e in h.events if isinstance(e, NoSwitchEvent)]
+        assert [e.reason for e in events] == ["expiring-quota-unreachable"]
+        assert "3" in events[0].detail
 
     def test_soonest_reset_loses_to_a_bigger_loss_further_out(self, temp_home):
         """Where waste-first and consume-first genuinely disagree. #2 resets
@@ -7196,3 +7198,73 @@ class TestBurstGuard:
         h.engine._burn = Exploding(90.0)
         outcome = h.tick_with_usage({"1": _usage(95), "2": _usage(5)})
         assert outcome is TickOutcome.NO_ACTION  # falls back to the configured 99
+
+
+class TestStrandedQuotaIsNamed:
+    """"Nothing is more urgent" and "the urgent one is unreachable" are
+    opposite situations that both end in holding. Measured on a live fleet: an
+    account losing 2.5 %/h — six times the active account's rate — was spent on
+    its 5-hour window, and the engine reported that nothing was expiring
+    faster, which reads as a broken decision rather than a correct one."""
+
+    def _harness(self, temp_home: Path) -> EngineHarness:
+        h = EngineHarness(temp_home)
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        h.seed(3, "c@example.com")
+        h.make_live("a@example.com", 1)
+        return h
+
+    def test_names_the_account_whose_quota_is_stranded(self, temp_home):
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(34, 34, _at(157)),
+            "2": _usage7(11, 92, _at(120)),
+            "3": _usage7(100, 53, _at(19)),   # 47 pts at 2.5 %/h, 5h spent
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        events = [e for e in h.events if isinstance(e, NoSwitchEvent)]
+        assert [e.reason for e in events] == ["expiring-quota-unreachable"]
+        assert "3" in events[0].detail
+
+    def test_says_when_the_stranded_account_frees_up(self, temp_home):
+        """The countdown is the actionable half: it turns "cannot use it" into
+        "cannot use it for another two hours"."""
+        h = self._harness(temp_home)
+        usage3 = _usage7(100, 53, _at(19))
+        usage3["five_hour"]["resets_at"] = _at(2)
+        h.tick_with_usage({
+            "1": _usage7(34, 34, _at(157)),
+            "2": _usage7(11, 92, _at(120)),
+            "3": usage3,
+        })
+        detail = [e for e in h.events if isinstance(e, NoSwitchEvent)][0].detail
+        assert "frees up in 2h" in detail
+
+    def test_a_genuinely_calm_fleet_still_says_so(self, temp_home):
+        """The new reason must not swallow the old one: with nothing more
+        urgent anywhere, "already burning the soonest" is the true verdict."""
+        h = self._harness(temp_home)
+        h.tick_with_usage({
+            "1": _usage7(10, 50, _at(20)),
+            "2": _usage7(10, 50, _at(160)),
+            "3": _usage7(10, 50, _at(160)),
+        })
+        assert [
+            e.reason for e in h.events if isinstance(e, NoSwitchEvent)
+        ] == ["already-burning-soonest"]
+
+    def test_a_usable_more_urgent_account_is_switched_to_not_explained(
+        self, temp_home
+    ):
+        """The diagnostic must never fire for a candidate the ranking would
+        have taken — that would mean explaining away a switch that should
+        have happened."""
+        h = self._harness(temp_home)
+        outcome = h.tick_with_usage({
+            "1": _usage7(34, 34, _at(157)),
+            "2": _usage7(11, 92, _at(120)),
+            "3": _usage7(20, 53, _at(19)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 3

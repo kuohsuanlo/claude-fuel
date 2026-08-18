@@ -1011,6 +1011,51 @@ class AutoSwitchEngine:
 
     # -- tick -----------------------------------------------------------------
 
+    def _stranded_candidates(
+        self,
+        oauth_candidates: Sequence[str],
+        usage: dict[str, dict | str | None],
+        headroom: dict[str, float | None],
+        settings: AutoSwitchSettings,
+        now: float,
+    ) -> list[tuple[str, str]]:
+        """Accounts losing quota faster than the active one that we still
+        cannot move to, as ``(number, when it frees up)``.
+
+        Diagnostic only — the ranking has already refused them, and this
+        explains why. "Unreachable" means either at a hard limit or at/over
+        the threshold, the same two gates ``_rank_candidates`` applies, so the
+        explanation can never describe a candidate the ranking would have
+        taken.
+        """
+        active_current = self.switcher.current_account_number()
+        if active_current is None:
+            return []
+        active_risk = waste_risk(usage.get(active_current), self._models, now) or 0.0
+        stranded: list[tuple[str, str]] = []
+        for number in oauth_candidates:
+            risk = waste_risk(usage.get(number), self._models, now)
+            if risk is None or risk <= max(
+                active_risk * WASTE_HYSTERESIS_RATIO, WASTE_MIN_RISK_PCT_PER_H
+            ):
+                continue
+            available = headroom.get(number)
+            if available is None or (
+                available > 0 and (100.0 - available) < settings.threshold
+            ):
+                continue  # it was choosable; something else refused it
+            recovery = _binding_recovery_ts(usage.get(number), self._models, now)
+            when = ""
+            if math.isfinite(recovery):
+                minutes = max(0, int((recovery - now) // 60))
+                when = (
+                    f"in {minutes // 60}h {minutes % 60:02d}m"
+                    if minutes >= 60
+                    else f"in {minutes}m"
+                )
+            stranded.append((number, when))
+        return stranded
+
     def _effective_threshold(
         self,
         settings: AutoSwitchSettings,
@@ -1448,6 +1493,31 @@ class AutoSwitchEngine:
                                 "active account's weekly reset time is "
                                 "unknown, and no other account is losing "
                                 "quota fast enough to move for"
+                            ),
+                        )
+                    )
+                    return TickOutcome.NO_ACTION
+                # "Nothing is more urgent" and "the urgent one is unreachable"
+                # are opposite situations that both end in holding, and saying
+                # the first when the second is true is how a correct decision
+                # reads as a broken one. Measured on a live fleet: an account
+                # losing 2.5 %/h — six times the active account's rate — was
+                # simply spent on its 5-hour window, and the engine reported
+                # that nothing was expiring faster.
+                stranded = self._stranded_candidates(
+                    oauth_candidates, usage, headroom, settings, decided_now
+                )
+                if stranded:
+                    when = min(
+                        (s for _, s in stranded if s), default="", key=len
+                    )
+                    self._emit(
+                        NoSwitchEvent(
+                            reason="expiring-quota-unreachable",
+                            detail=(
+                                f"account {', '.join(n for n, _ in stranded)} is "
+                                "losing quota faster but has no room to work in"
+                                + (f"; frees up {when}" if when else "")
                             ),
                         )
                     )

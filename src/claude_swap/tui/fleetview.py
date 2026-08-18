@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
@@ -59,6 +59,15 @@ DISPLAY_INTERVAL_S = 1.0
 # from elapsed time means a repaint cannot change the phase and the gait runs
 # at exactly this period no matter how often the screen is redrawn.
 SPRITE_FRAME_S = 0.22
+
+# The sleep puffs, top row first. A row's puff is chosen by its distance from
+# the current phase, so the whole column appears to rise.
+_ZZZ = ("zZ", "z", "", "Z", "")
+
+# How recently tokens must have been spent for the pet to count as awake.
+# Longer than one turn's thinking pause, so he does not nod off between tool
+# calls, and short enough that a finished session puts him to sleep promptly.
+_BURN_WINDOW_S = 90.0
 
 # Quota expiring inside this window is what the headline "about to lose"
 # figure counts. A day is the horizon a person can actually act on — anything
@@ -133,15 +142,24 @@ class FleetScreen(Screen):
         # never does. It is the proof the instrument is still ticking, and a
         # screen with no moving part looks identical to a wedged one.
         self._show_log = True
+        self._ticks = 0
 
     def compose(self) -> ComposeResult:
+        # The pet sits in its own column on the RIGHT. Below the gauges it
+        # pushed the account list off short terminals; beside them it costs no
+        # vertical space at all, which is the whole reason it can be this size.
+        with Horizontal(id="fleet-body"):
+            with Vertical(id="fleet-main"):
+                yield from self._compose_main()
+            yield Static("", id="fleet-status")
+        yield Footer()
+
+    def _compose_main(self) -> ComposeResult:
         with Vertical(id="fleet-top"):
             yield Static("", id="fleet-headline")
             yield Static("", id="fleet-bars")
             yield Static("", id="fleet-burn")
             yield Static("", id="fleet-accounts")
-        yield Static("", id="fleet-status")
-        yield Footer()
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -158,11 +176,14 @@ class FleetScreen(Screen):
         self.watch(self.app, "snapshot", self._on_snapshot)
         self.watch(self.app, "theme", self._on_theme_change)
         self._start_engine()
-        self.set_interval(DISPLAY_INTERVAL_S, self._display_tick)
-        # The pet repaints on its own, faster timer. Recomputing every gauge at
-        # animation rate would be pure waste, and tying the walk to the data
-        # tick is what made it stutter.
-        self.set_interval(SPRITE_FRAME_S, self._animate)
+        # ONE timer, at the animation rate. Two timers were tried — a slow one
+        # for the data and a fast one for the pet — and the fast one silently
+        # never fired: measured, `_animate` was entered zero times in four
+        # seconds while an identical interval registered after mount fired at
+        # 4.3/s. Rather than chase that, the single timer runs at frame rate
+        # and only does the expensive recompute every Nth call, which is what
+        # the split was for anyway.
+        self.set_interval(SPRITE_FRAME_S, self._frame_tick)
         self._display_tick()
 
     def on_unmount(self) -> None:
@@ -408,22 +429,36 @@ class FleetScreen(Screen):
         hidden — a layout that changed height on `h` would shift everything
         above it and make the key feel like it broke something.
         """
-        sprite = pets.WORKING if self._armed else pets.WATCHING
-        rows = render_sprite(sprite, self._sprite_frame(), dim=not self._armed)
-        speech = self._status_line(palette) if self._show_log else None
-        # Beside the middle row: it reads as the pet saying it, and it keeps
-        # the text clear of the head and the feet.
-        speech_row = len(rows) // 2
+        frame = self._sprite_frame()
+        # Asleep when nothing is being spent on this machine. That makes the
+        # pet report something the numbers do not: whether the burn reading is
+        # a measurement of work or of an idle minute.
+        asleep = not self._burning()
+        sprite = pets.SLEEPING if asleep else pets.AWAKE
+        rows = render_sprite(sprite, frame, dim=asleep)
         text = Text(no_wrap=True, overflow="ellipsis")
         for index, row in enumerate(rows):
             if index:
                 text.append("\n")
-            text.append("  ")
+            text.append(" ")
             text.append(row)
-            if speech is not None and index == speech_row:
-                text.append("   ")
-                text.append(speech)
+            if asleep and index < len(_ZZZ):
+                # The zZzZ drifts up and away over the loop. Letters are drawn
+                # as TEXT, not pixels: at sixteen pixels wide a drawn "z" is
+                # three dots and reads as noise.
+                phase = frame % len(_ZZZ)
+                puff = _ZZZ[(index - phase) % len(_ZZZ)]
+                if puff:
+                    text.append(" ")
+                    text.append(puff, style=palette.muted)
+        if self._show_log:
+            text.append("\n\n ")
+            text.append(self._status_line(palette))
         self._update_status(text)
+
+    def _burning(self) -> bool:
+        """Whether this machine is spending tokens right now."""
+        return bool(self._sensor and self._sensor.tokens_per_s(_BURN_WINDOW_S) > 0)
 
     @staticmethod
     def _sprite_frame() -> int:
@@ -431,9 +466,15 @@ class FleetScreen(Screen):
         by a repaint — only by time passing."""
         return int(time.monotonic() / SPRITE_FRAME_S)
 
-    def _animate(self) -> None:
-        """Repaint just the pet. Cheap enough to run at animation rate."""
-        if self.is_attached:
+    def _frame_tick(self) -> None:
+        """Every frame: repaint the pet. Every Nth: recompute the gauges too."""
+        if not self.is_attached:
+            return
+        self._ticks += 1
+        every = max(1, round(DISPLAY_INTERVAL_S / SPRITE_FRAME_S))
+        if self._ticks % every == 0:
+            self._display_tick()
+        else:
             self._render_status(Palette.from_theme(self.app.current_theme))
 
     def _status_line(self, palette: Palette) -> Text:

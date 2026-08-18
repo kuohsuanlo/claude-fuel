@@ -2095,3 +2095,56 @@ class TestPetTiming:
             second = FleetScreen._sprite_frame()
             third = FleetScreen._sprite_frame()
         assert (first, second, third) == (0, 1, 3), "one frame per fixed period"
+
+
+@pytest.mark.asyncio
+class TestPetFrameRate:
+    """The pet must animate at its own rate, not the data rate."""
+
+    async def test_the_pose_changes_at_the_frame_rate(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Measured twice before this held: once because two poses were
+        repeated so the picture only changed every fourth frame, and once
+        because the pet's timer silently never fired. Both looked identical
+        from outside — a one-second animation."""
+        import time as _t
+
+        from textual.widgets import Static
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.fleetview import SPRITE_FRAME_S
+
+        app = CswapApp(
+            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await settle(pilot)
+            widget = app.screen.query_one("#fleet-status", Static)
+            seen, changes, start = None, 0, _t.monotonic()
+            while _t.monotonic() - start < 2.0:
+                await asyncio.sleep(0.02)
+                await pilot.pause()
+                rendered = widget.render()
+                text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+                if text != seen:
+                    seen, changes = text, changes + 1
+            elapsed = _t.monotonic() - start
+            expected = elapsed / SPRITE_FRAME_S
+            assert changes >= expected * 0.6, (
+                f"{changes} pose changes in {elapsed:.1f}s; at "
+                f"{SPRITE_FRAME_S}s per frame at least {expected*0.6:.0f} were due"
+            )
+
+    def test_no_pose_repeats_a_neighbour(self):
+        """The visible rate is the rate the POSE changes, never the rate the
+        timer fires — a cycle that repeats a pose divides the apparent frame
+        rate by however many times it repeats."""
+        from claude_swap.tui import pets
+
+        for sprite in (pets.AWAKE, pets.SLEEPING):
+            n = len(sprite.frames)
+            for i in range(n):
+                assert sprite.frames[i] != sprite.frames[(i + 1) % n], (
+                    f"frame {i} repeats its neighbour"
+                )

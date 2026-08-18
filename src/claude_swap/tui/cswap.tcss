@@ -229,8 +229,14 @@ AddTokenModal Input {
 #fleet-accounts {
     height: auto;
 }
+#fleet-body {
+    height: 1fr;
+}
+#fleet-main {
+    width: 1fr;
+}
 #fleet-status {
+    width: 26;
     height: auto;
-    padding: 0 1;
-    margin-top: 1;
+    padding: 1 1 0 1;
 }

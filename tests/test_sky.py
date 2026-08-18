@@ -152,3 +152,61 @@ class TestScene:
         from claude_swap.tui.skyview import ground_colour
 
         assert ground_colour(SkyState()).startswith("#")
+
+
+class TestTheBodyIsNeverCutOff:
+    """A sky this small has one subject; a clipped one is a broken shape."""
+
+    def _extent(self, is_day: bool, fraction: float):
+        from claude_swap.tui.skyview import SKY_H, SKY_W, sky_pixels
+
+        buf = sky_pixels(SkyState("clear", is_day, 0, 20.0, "", True), 0,
+                         fraction=fraction)
+        body = {"#ffcf5c", "#fff2b8"} if is_day else {"#e8e6dc", "#b9b7ae"}
+        ys = [y for y in range(SKY_H) for x in range(SKY_W) if buf[y][x] in body]
+        xs = [x for y in range(SKY_H) for x in range(SKY_W) if buf[y][x] in body]
+        return (max(xs) - min(xs) + 1, max(ys) - min(ys) + 1) if ys else (0, 0)
+
+    @pytest.mark.parametrize("is_day", [True, False])
+    def test_full_height_at_every_hour(self, is_day: bool):
+        """Eight pixels of panel could not hold a seven-pixel disc AND an arc
+        for it to travel, so the panel is twelve — "bigger" and "never
+        clipped" are one constraint on the panel's height."""
+        for step in range(48):
+            width, height = self._extent(is_day, step / 48.0)
+            assert height == 7, f"cut to {height} rows at {step / 48.0:.2f}"
+
+    def test_the_sun_keeps_its_full_width(self):
+        for step in range(48):
+            width, _ = self._extent(True, step / 48.0)
+            assert width == 7, f"cut to {width} columns at {step / 48.0:.2f}"
+
+    def test_the_body_crosses_the_panel_over_the_day(self):
+        """It should travel, not sit in one place — position is the reading."""
+        left, _ = self._extent(True, 0.26)
+        right, _ = self._extent(True, 0.74)
+        from claude_swap.tui.skyview import SKY_H, SKY_W, sky_pixels
+
+        def centre(fraction):
+            buf = sky_pixels(SkyState("clear", True, 0, 20.0, "", True), 0,
+                             fraction=fraction)
+            xs = [x for y in range(SKY_H) for x in range(SKY_W)
+                  if buf[y][x] in {"#ffcf5c", "#fff2b8"}]
+            return sum(xs) / len(xs)
+
+        assert centre(0.74) - centre(0.26) > SKY_W * 0.5
+
+
+class TestOverlaySitsOnTheScene:
+    def test_a_letter_takes_the_sky_as_its_background(self):
+        """Appended after the rows, the sleep puffs landed on the terminal's
+        own background outside the painted scene, which reads as a rendering
+        fault rather than as someone sleeping."""
+        from claude_swap.tui.skyview import ground_colour, scene_rows
+
+        state = SkyState("clear", False, 0, 12.0, "", True)
+        rows = scene_rows(state, 0, ("." * 34,), {}, overlay=[(0, 5, "z", "#ffffff")])
+        line = rows[0]
+        assert line.plain[5] == "z"
+        span = next(s for s in line.spans if s.start <= 5 < s.end)
+        assert span.style.bgcolor is not None, "the letter is floating"

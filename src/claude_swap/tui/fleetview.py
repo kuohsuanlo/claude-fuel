@@ -42,7 +42,7 @@ from claude_swap.settings import (
 )
 from claude_swap.sky import SkyWatcher
 from claude_swap.tui import data, pets
-from claude_swap.tui.skyview import SKY_SLOWDOWN, scene_rows
+from claude_swap.tui.skyview import SKY_H, SKY_SLOWDOWN, scene_rows
 from claude_swap.tui.sprite import render as render_sprite
 from claude_swap.tui.theme import Palette
 
@@ -468,6 +468,17 @@ class FleetScreen(Screen):
         # No caption: the picture is the statement, and a place name and a
         # temperature beside it are just words competing with it.
         sky = self._sky.state() if self._sky else None
+        # The sleep puffs are laid INTO the night sky rather than appended
+        # after the rows: appended they landed on the terminal's own
+        # background, outside the painted scene.
+        overlay: list[tuple[int, int, str, str]] = []
+        if asleep:
+            for index, puff in enumerate(_ZZZ):
+                if not puff:
+                    continue
+                row = (index + frame) % max(1, SKY_H // 2)
+                for offset, char in enumerate(puff):
+                    overlay.append((row, 24 + index + offset, char, palette.foreground))
         if sky is not None:
             rows = scene_rows(
                 sky,
@@ -475,6 +486,7 @@ class FleetScreen(Screen):
                 sprite.frames[frame % len(sprite.frames)],
                 sprite.palette,
                 dim=asleep,
+                overlay=overlay,
             )
         else:
             rows = render_sprite(sprite, frame, dim=asleep)
@@ -485,15 +497,6 @@ class FleetScreen(Screen):
             # column past the widget's content width, and every row wrapped —
             # the picture arrived one cell wider than the space it was given.
             text.append(row)
-            if asleep and index < len(_ZZZ):
-                # The zZzZ drifts up and away over the loop. Letters are drawn
-                # as TEXT, not pixels: at sixteen pixels wide a drawn "z" is
-                # three dots and reads as noise.
-                phase = frame % len(_ZZZ)
-                puff = _ZZZ[(index - phase) % len(_ZZZ)]
-                if puff:
-                    text.append(" ")
-                    text.append(puff, style=palette.muted)
         # A caption under the icon, so the state is stated as well as drawn.
         text.append("\n")
         text.append(

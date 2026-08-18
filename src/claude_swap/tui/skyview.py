@@ -25,14 +25,17 @@ from __future__ import annotations
 
 import math
 
+from rich.style import Style
 from rich.text import Text
 
 from claude_swap.sky import SkyState, arc_position, day_fraction
 from claude_swap.tui.sprite import render_pixels
 
-#: Panel size in PIXELS. Eight rows of pixels is four rows of text — enough
-#: for a body, a glow around it and something falling past.
-SKY_W, SKY_H = 34, 8
+#: Panel size in PIXELS. Twelve rows of pixels is six rows of text. Eight was
+#: tried first and a radius-three disc is seven pixels tall, so the sun filled
+#: the panel edge to edge and there was nowhere for the arc to go — "bigger"
+#: and "never clipped" are the same constraint on the panel's height.
+SKY_W, SKY_H = 34, 12
 
 # Slower than the pet on purpose: weather that twitches at animation rate
 # reads as a fault. Every Nth pet frame advances the sky by one.
@@ -125,8 +128,15 @@ def sky_pixels(
     # is what tells dawn from noon; a body that only slid sideways would look
     # the same at both.
     across = arc_position(fraction, is_day=is_day)
-    cx = int(round(2 + across * (SKY_W - 5)))
-    cy = int(round(6.0 - math.sin(across * math.pi) * 4.0))
+    # Clamped so the disc never runs off an edge. Unclamped, the moon at its
+    # highest lost its top row to the frame and read as a broken shape rather
+    # than as a moon — and a body that is cut off is the one thing a sky this
+    # small cannot afford, since it is the only subject in it.
+    radius = 3
+    cx = int(round(radius + across * (SKY_W - 2 * radius - 1)))
+    cy = int(round((SKY_H - 1 - radius) - math.sin(across * math.pi) * 3.0))
+    cx = max(radius, min(SKY_W - 1 - radius, cx))
+    cy = max(radius, min(SKY_H - 1 - radius, cy))
 
     # WEATHER FIRST, BODY LAST. Drawn the other way round the moon vanished
     # behind the first cloud that drifted over it, and a sky whose only
@@ -201,6 +211,7 @@ def scene_rows(
     palette: dict[str, str],
     *,
     dim: bool = False,
+    overlay: list[tuple[int, int, str, str]] | None = None,
 ) -> list[Text]:
     """Sky and pet as ONE picture, sharing a background.
 
@@ -226,4 +237,30 @@ def scene_rows(
             key = pet_frame[y][x] if x < pet_w else "."
             line.append(ground if key == "." else palette.get(key, ground))
         buf.append(line)
-    return render_pixels(buf, dim=dim)
+    rows = render_pixels(buf, dim=dim)
+    # Letters are laid INTO the scene, replacing a cell rather than being
+    # appended after it. Appended, they landed past the painted area on the
+    # terminal's own background — a "zZ" floating outside the night sky reads
+    # as a rendering fault, not as someone sleeping.
+    for row_index, column, char, colour in overlay or ():
+        if not (0 <= row_index < len(rows)):
+            continue
+        line = rows[row_index]
+        if not (0 <= column < len(line.plain)):
+            continue
+        ground_here = _cell_background(buf, row_index, column, ground)
+        replaced = Text()
+        replaced.append(line[:column])
+        replaced.append(char, style=Style(color=colour, bgcolor=ground_here))
+        replaced.append(line[column + 1:])
+        rows[row_index] = replaced
+    return rows
+
+
+def _cell_background(buf, row_index: int, column: int, fallback: str) -> str:
+    """The colour already behind a cell, so a letter sits ON the sky."""
+    top = row_index * 2
+    for y in (top, top + 1):
+        if 0 <= y < len(buf) and 0 <= column < len(buf[y]) and buf[y][column]:
+            return buf[y][column]
+    return fallback

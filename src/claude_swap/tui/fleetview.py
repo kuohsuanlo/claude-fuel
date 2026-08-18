@@ -40,7 +40,9 @@ from claude_swap.settings import (
     parse_account_weights,
     save_settings,
 )
+from claude_swap.sky import SkyWatcher
 from claude_swap.tui import data, pets
+from claude_swap.tui.skyview import SKY_SLOWDOWN, sky_rows
 from claude_swap.tui.sprite import render as render_sprite
 from claude_swap.tui.theme import Palette
 
@@ -144,6 +146,7 @@ class FleetScreen(Screen):
         self._adjusting = False
         self._sensor: TranscriptBurnSensor | None = None
         self._tracker: BurnTracker | None = None
+        self._sky: SkyWatcher | None = None
         self._latest: AutoSwitchEvent | None = None
         self._note: str = ""
         # The engine's running commentary is useful while you are deciding
@@ -186,6 +189,13 @@ class FleetScreen(Screen):
         self._sensor = TranscriptBurnSensor()
         self._tracker = BurnTracker(sensor=self._sensor)
         self._load_calibration()
+        # Weather costs no tokens and never blocks: one small key-less request
+        # on a background thread, at most a few times an hour, cached to disk
+        # so a fresh process is not blank while it waits.
+        self._sky = SkyWatcher(
+            cache_path=self.app.switcher.backup_dir / "sky.json",
+            location=getattr(self._settings, "location", None),
+        )
         self.watch(self.app, "snapshot", self._on_snapshot)
         self.watch(self.app, "theme", self._on_theme_change)
         self._start_engine()
@@ -453,6 +463,15 @@ class FleetScreen(Screen):
             sprite, frame = pets.WORKING, frame // self._swing_divisor()
         rows = render_sprite(sprite, frame, dim=asleep)
         text = Text(no_wrap=True, overflow="ellipsis")
+        # The sky goes above the pet, on its own slower phase: weather that
+        # twitches at animation rate reads as a fault rather than as weather.
+        sky = self._sky.state() if self._sky else None
+        if sky is not None:
+            for row in sky_rows(sky, self._sprite_frame() // SKY_SLOWDOWN):
+                text.append(row)
+                text.append("\n")
+            text.append(sky.label, style=palette.muted)
+            text.append("\n")
         for index, row in enumerate(rows):
             if index:
                 text.append("\n")

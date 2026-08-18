@@ -137,6 +137,42 @@ def render(sprite: Sprite, frame: int, *, dim: bool = False) -> list[Text]:
     return out
 
 
+def render_pixels(
+    pixels: list[list[str | None]], *, dim: bool = False
+) -> list[Text]:
+    """Same half-block rendering, for a pixel buffer built at draw time.
+
+    Sprites are fixed artwork; some pictures — a sky whose sun moves with the
+    clock — are computed per frame and have no fixed palette to key against.
+    Both go through the same cell rule, so a procedural drawing cannot pick up
+    the inherited-foreground fringe that fixed sprites are tested against.
+
+    ``pixels`` is rows of hex colours, ``None`` meaning transparent. An odd
+    number of rows leaves the final half unpainted rather than borrowing a
+    colour.
+    """
+    out: list[Text] = []
+    for index in range(0, len(pixels), 2):
+        top = pixels[index]
+        bottom = pixels[index + 1] if index + 1 < len(pixels) else [None] * len(top)
+        line = Text()
+        for column in range(len(top)):
+            upper = top[column]
+            lower = bottom[column] if column < len(bottom) else None
+            if upper is None and lower is None:
+                line.append(" ")
+            elif upper is not None and lower is not None:
+                line.append(
+                    _UPPER, style=Style(color=upper, bgcolor=lower, dim=dim or None)
+                )
+            else:
+                opaque = upper if upper is not None else lower
+                glyph = _UPPER if upper is not None else _LOWER
+                line.append(glyph, style=Style(color=opaque, dim=dim or None))
+        out.append(line)
+    return out
+
+
 def beside(rows: list[Text], *, gap: int = 2) -> Text:
     """Join sprite rows into one Text with newlines, indented by ``gap``.
 

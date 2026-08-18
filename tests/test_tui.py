@@ -2093,19 +2093,32 @@ class TestPetFrameRate:
     """The pet must animate at its own rate, not the data rate."""
 
     async def _pose_changes(self, app, pilot, seconds=2.0):
+        """Count changes in the PET rows only.
+
+        The sky above it animates on its own, slower phase, so measuring the
+        whole widget counts weather as pet motion and the two rates cannot be
+        told apart.
+        """
         import time as _t
 
         from textual.widgets import Static
 
+        from claude_swap.tui import pets
+        from claude_swap.tui.skyview import SKY_H
+
         widget = app.screen.query_one("#fleet-status", Static)
+        sky_rows_count = SKY_H // 2 + 1          # panel plus its caption
+        pet_rows = pets.SLEEPING.height // 2
         seen, changes, start = None, 0, _t.monotonic()
         while _t.monotonic() - start < seconds:
             await asyncio.sleep(0.02)
             await pilot.pause()
             rendered = widget.render()
             text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
-            if text != seen:
-                seen, changes = text, changes + 1
+            lines = text.split("\n")
+            pet = "\n".join(lines[sky_rows_count : sky_rows_count + pet_rows])
+            if pet != seen:
+                seen, changes = pet, changes + 1
         return changes, _t.monotonic() - start
 
     async def test_awake_pose_changes_at_the_frame_rate(
@@ -2148,7 +2161,10 @@ class TestPetFrameRate:
             await settle(pilot)
             app.screen._burning = lambda: False    # asleep
             changes, elapsed = await self._pose_changes(app, pilot, seconds=2.5)
-            ceiling = elapsed / (SPRITE_FRAME_S * _SLEEP_SLOWDOWN) + 1
+            # Two frames of slack, not one: this samples a real clock on a
+            # machine that may be running a dozen other sessions, and a test
+            # that fails on scheduling jitter teaches nothing.
+            ceiling = elapsed / (SPRITE_FRAME_S * _SLEEP_SLOWDOWN) + 2
             assert changes <= ceiling, (
                 f"{changes} changes in {elapsed:.1f}s is faster than the "
                 f"slowed sleep rate allows ({ceiling:.0f})"

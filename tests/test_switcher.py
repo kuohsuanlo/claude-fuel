@@ -6383,9 +6383,12 @@ class TestFormatUsageLines:
         assert len({line.index("%") for line in lines}) == 1
 
     def test_standard_windows_alone_keep_legacy_layout(self):
+        """The reset column pads to 16, which is what "Aug 25 Tue 07:00" needs.
+        A narrower pad silently un-aligns every dated row against the
+        same-day rows beside it."""
         usage = {"five_hour": {"pct": 7.0, "clock": "20:39", "countdown": "1h 30m"}}
         lines = _format_usage_lines(usage)
-        assert lines == ["5h:   7%   resets 20:39         in 1h 30m"]
+        assert lines == ["5h:   7%   resets 20:39             in 1h 30m"]
 
     def test_seven_day_ahead_of_pace_marker(self):
         # 1 day elapsed of the week (resets_at 6 days out), 50% used -> far

@@ -1082,14 +1082,23 @@ class AutoSwitchEngine:
             return settings.threshold
         try:
             self._burn.sensor.poll()
-            for number, entry in entries.items():
-                value = usage.get(number)
-                if not isinstance(value, dict) or entry.fetched_at is None:
-                    continue
-                headroom = oauth.account_headroom(value, self._models)
-                if headroom is not None:
-                    self._burn.observe(number, 100.0 - headroom, entry.fetched_at)
-            recommended = self._burn.estimate(current).recommended_threshold()
+            self._burn.note_active(current)
+            active_value = usage.get(current)
+            entry = entries.get(current)
+            if isinstance(active_value, dict) and entry is not None and entry.fetched_at:
+                # Every window of the ACTIVE account, each calibrated on its
+                # own: a token is a different fraction of a 5-hour window than
+                # of a weekly one, and mixing them understated the rate ~3x on
+                # a live fleet.
+                for label, pct, _ in oauth.relevant_windows(
+                    active_value, ("all",)
+                ):
+                    self._burn.observe(current, label, pct, entry.fetched_at)
+            windows = oauth.relevant_windows(active_value, self._models)
+            binding = max(windows, key=lambda w: w[1])[0] if windows else None
+            recommended = self._burn.estimate(
+                current, binding
+            ).recommended_threshold()
         except Exception:  # pragma: no cover - sensing must never break a tick
             return settings.threshold
         if recommended is None:

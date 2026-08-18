@@ -28,7 +28,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, RichLog, Static
+from textual.widgets import Footer, Static
 
 from claude_swap import fleet, oauth
 from claude_swap.autoswitch import AutoSwitchEngine, AutoSwitchEvent, pct_label
@@ -40,8 +40,7 @@ from claude_swap.settings import (
     parse_account_weights,
     save_settings,
 )
-from claude_swap.tui.autoview import event_text
-from claude_swap.tui.modals import ConfirmModal
+from claude_swap.tui import data
 from claude_swap.tui.theme import Palette
 
 if TYPE_CHECKING:
@@ -87,6 +86,31 @@ _BAR_MIN = 12
 _BAR_MAX = 36
 
 
+# A small machine that drinks fuel. It exists to answer a question the numbers
+# cannot: is this thing actually running? A screen of static figures looks
+# identical whether it is measuring every second or wedged, and the whole
+# premise here is a second-by-second instrument. So the animation is tied to
+# the same tick that recomputes the numbers — if it moves, the measurement is
+# live.
+#
+# Two states, because the tool has two: WATCHING keeps its hands to itself and
+# only blinks; WORKING holds a spanner and has fuel flowing into it. The
+# difference is visible from across the room, which matters for a mode that
+# can change your active account on its own.
+_CRITTER_WATCH = (
+    r"   [o_o]",
+    r"   [o_o]",
+    r"   [-_-]",
+    r"   [o_o]",
+)
+_CRITTER_WORK = (
+    r"≈≈≈[o_o]╾╼",
+    r" ≈≈[o_o]╾╼",
+    r"  ≈[o_o]╾╼",
+    r"   [O_O]╾╼",
+)
+
+
 class FleetScreen(Screen):
     """The single-screen fleet view."""
 
@@ -99,6 +123,7 @@ class FleetScreen(Screen):
         Binding("right", "threshold_step(1)", "+1%"),
         Binding("enter", "confirm", "Confirm"),
         Binding("r", "apply_recommended", "Use suggested"),
+        Binding("h", "toggle_status", "Hide log"),
         Binding("f", "app.refresh_full", "Refresh usage"),
         Binding("q", "app.quit", "Quit"),
     ]
@@ -118,6 +143,14 @@ class FleetScreen(Screen):
         self._adjusting = False
         self._sensor: TranscriptBurnSensor | None = None
         self._tracker: BurnTracker | None = None
+        self._latest: AutoSwitchEvent | None = None
+        self._note: str = ""
+        self._frame = 0
+        # The engine's running commentary is useful while you are deciding
+        # whether to trust it and noise afterwards, so it hides — but the pet
+        # never does. It is the proof the instrument is still ticking, and a
+        # screen with no moving part looks identical to a wedged one.
+        self._show_log = True
 
     def compose(self) -> ComposeResult:
         with Vertical(id="fleet-top"):
@@ -125,12 +158,7 @@ class FleetScreen(Screen):
             yield Static("", id="fleet-bars")
             yield Static("", id="fleet-burn")
             yield Static("", id="fleet-accounts")
-        log = RichLog(id="fleet-log", highlight=False, markup=False, wrap=True)
-        # Not focusable: a focused RichLog eats the arrow keys to scroll
-        # itself, and on this screen the arrows are how an account is picked.
-        # The log is a passive readout — nothing here needs to type into it.
-        log.can_focus = False
-        yield log
+        yield Static("", id="fleet-status")
         yield Footer()
 
     # -- lifecycle ----------------------------------------------------------
@@ -169,16 +197,22 @@ class FleetScreen(Screen):
         """
         if snapshot is None or self._tracker is None:
             return
-        models = tuple(self._models())
         before = self._tracker.pct_per_token()
+        self._tracker.note_active(snapshot.active_number)
         for account in snapshot.accounts:
             entry = account.usage
             if entry.last_good is None or entry.fetched_at is None:
                 continue
-            headroom = oauth.account_headroom(entry.last_good, models)
-            if headroom is None:
+            if not account.is_active:
+                # Only the active account is being spent, so only its windows
+                # can be paired with this machine's tokens. An idle account's
+                # percentage does move — someone else's machine — and pairing
+                # that with local tokens would calibrate against noise.
                 continue
-            self._tracker.observe(account.number, 100.0 - headroom, entry.fetched_at)
+            for label, pct, _ in oauth.relevant_windows(entry.last_good, ("all",)):
+                self._tracker.observe(
+                    account.number, label, pct, entry.fetched_at
+                )
         if self._tracker.pct_per_token() != before:
             # Only on a genuine change: observations arrive several times a
             # second from repaints, and rewriting the cache on each would be a
@@ -246,10 +280,16 @@ class FleetScreen(Screen):
             pass  # screen tearing down mid-tick; the event has nowhere to go
 
     def _on_engine_event(self, event: AutoSwitchEvent) -> None:
+        """Keep the LATEST line only.
+
+        A scrolling log of every poll was mostly the same sentence repeated,
+        and it pushed the thing worth reading — what the engine decided just
+        now — off the bottom. One line, replaced in place.
+        """
         if not self.is_attached:
             return
-        palette = Palette.from_theme(self.app.current_theme)
-        self.query_one("#fleet-log", RichLog).write(event_text(event, palette=palette))
+        self._latest = event
+        self._render_status(Palette.from_theme(self.app.current_theme))
         if event.kind == "switch":
             self.app.request_refresh()
 
@@ -313,6 +353,10 @@ class FleetScreen(Screen):
         self._log_note(f"switching to account {account.number}")
         self.app.do_switch(account.number)
 
+    def action_toggle_status(self) -> None:
+        self._show_log = not self._show_log
+        self._render_status(Palette.from_theme(self.app.current_theme))
+
     def action_adjust_threshold(self) -> None:
         self._adjusting = not self._adjusting
         self.refresh_bindings()
@@ -366,19 +410,72 @@ class FleetScreen(Screen):
         self._display_tick()
 
     def _log_note(self, message: str) -> None:
-        palette = Palette.from_theme(self.app.current_theme)
-        self.query_one("#fleet-log", RichLog).write(
-            Text(f"— {message} —", style=palette.muted)
+        self._note = message
+        self._latest = None
+        self._render_status(Palette.from_theme(self.app.current_theme))
+
+    def _render_status(self, palette: Palette) -> None:
+        """The creature, then the single most recent thing that happened."""
+        frames = _CRITTER_WORK if self._armed else _CRITTER_WATCH
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append(
+            frames[self._frame % len(frames)],
+            style=palette.accent if self._armed else palette.muted,
         )
+        if not self._show_log:
+            self._update_status(text)
+            return
+        text.append("  ")
+        if self._latest is not None:
+            style = (
+                f"bold {palette.accent}"
+                if self._latest.kind == "switch"
+                else palette.sev_warn
+                if self._latest.kind in ("error", "account-quarantined")
+                else palette.muted
+            )
+            text.append(f"{data.clock_stamp()}  ", style=palette.track)
+            text.append(self._latest.human(), style=style)
+        elif self._note:
+            text.append(self._note, style=palette.muted)
+        else:
+            text.append(
+                "watching" if not self._armed else "auto-switching armed",
+                style=palette.muted,
+            )
+        self._update_status(text)
+
+    def _update_status(self, text: Text) -> None:
+        try:
+            self.query_one("#fleet-status", Static).update(text)
+        except Exception:
+            pass  # composed before mount, or torn down mid-tick
 
     # -- render -------------------------------------------------------------
 
+    def _binding_window(self, account) -> str | None:
+        """The window whose utilization currently gates this account."""
+        windows = oauth.relevant_windows(account.usage.last_good, self._models())
+        return max(windows, key=lambda w: w[1])[0] if windows else None
+
     def _estimate(self):
+        """The burn rate expressed in the ACTIVE account's binding window.
+
+        Which window matters because each is a different size: the same tokens
+        are several times more of a 5-hour window than of a weekly one, so a
+        rate quoted without saying which is a number with no unit.
+        """
         if self._tracker is None:
             return None
         snapshot = self.app.snapshot
-        active = snapshot.active_number if snapshot else None
-        return self._tracker.estimate(active or "")
+        if snapshot is None:
+            return self._tracker.estimate("")
+        active = next(
+            (a for a in snapshot.accounts if a.is_active), None
+        )
+        if active is None:
+            return self._tracker.estimate(snapshot.active_number or "")
+        return self._tracker.estimate(active.number, self._binding_window(active))
 
     def _segments(self, now: float) -> list[fleet.FleetSegment]:
         snapshot = self.app.snapshot
@@ -406,8 +503,10 @@ class FleetScreen(Screen):
             return
         now = time.time()
         palette = Palette.from_theme(self.app.current_theme)
+        self._frame += 1
         segments = self._segments(now)
         self._render_headline(segments, now, palette)
+        self._render_status(palette)
         self._render_bars(segments, now, palette)
         self._render_burn(palette)
         self._render_accounts(segments, now, palette)
@@ -679,67 +778,83 @@ class FleetScreen(Screen):
         return filled, spent, marker_col
 
     def _render_burn(self, palette: Palette) -> None:
-        """How fast quota is going, and whether that is fast enough.
+        """One rate per window, because there is no such thing as "the" rate.
 
-        The gauges show what is at stake; this says whether the current rate
-        will actually finish the quota that dies first. Those two together are
-        the whole question — "am I going to lose some of this?" — and neither
-        answers it alone.
+        The same tokens are a large fraction of a 5-hour window and a small
+        fraction of a weekly one, so a single figure would be a number without
+        a unit. Each window is calibrated on its own scale (see
+        ``burn.BurnTracker.observe``) and reported on its own line; the
+        suggested threshold comes from whichever window is binding, since that
+        is the one that will actually stop the account.
         """
-        estimate = self._estimate()
+        target = self.query_one("#fleet-burn", Static)
+        snapshot = self.app.snapshot
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append("burn  ", style=palette.muted)
-        if estimate is None or estimate.pct_per_s is None:
-            # Percent needs two API samples bracketing local spend; tokens do
-            # not. Showing the token rate meanwhile proves the instrument is
-            # alive and names what it is waiting for — an indefinite
-            # "measuring…" reads as a hang.
-            if estimate is not None and estimate.tokens_per_s > 0:
-                text.append(
-                    f"{estimate.tokens_per_s:,.0f} tok/s", style=palette.foreground
-                )
-                text.append(
-                    "  ·  calibrating against the next usage sample",
-                    style=palette.muted,
-                )
-            else:
-                text.append("idle — nothing burning locally", style=palette.muted)
-            self.query_one("#fleet-burn", Static).update(text)
+        if self._tracker is None or snapshot is None:
+            target.update(Text("burn  measuring…", style=palette.muted))
             return
-        rate = estimate.pct_per_s
-        seconds_per_pct = estimate.seconds_per_pct
-        if seconds_per_pct is None:
-            # A zero rate is a measurement, not a gap. Saying "idle" beats
-            # printing 0.000%/s, which reads as a broken instrument.
-            text.append("idle", style=palette.sev_ok)
-        else:
-            # BOTH units: the rate is what the threshold maths runs on, while
-            # "1% every 21s" is the one a person can hold against how long
-            # their next turn will take.
-            text.append(f"{rate:.3f}%/s", style=palette.foreground)
-            text.append(f"  ·  1% every {seconds_per_pct:.0f}s", style=palette.muted)
-        text.append(
-            "  ·  " + ("calibrated" if estimate.calibrated else "API average"),
-            style=palette.muted,
+        active = next((a for a in snapshot.accounts if a.is_active), None)
+        tokens_per_s = self._sensor.tokens_per_s() if self._sensor else 0.0
+        windows = (
+            oauth.relevant_windows(active.usage.last_good, ("all",))
+            if active is not None
+            else []
         )
-        recommended = estimate.recommended_threshold()
-        if recommended is not None and self._settings is not None:
-            text.append("   suggested ", style=palette.muted)
-            good = recommended >= self._settings.threshold
+        if not windows:
+            target.update(Text("burn  measuring…", style=palette.muted))
+            return
+        binding = max(windows, key=lambda w: w[1])[0]
+        label_width = max(len(name) for name, _, _ in windows)
+        drawn = 0
+        for name, _pct, _reset in windows:
+            estimate = self._tracker.estimate(active.number, name)
+            text.append("burn  " if not drawn else "\n      ", style=palette.muted)
+            drawn += 1
             text.append(
-                f"{pct_label(recommended)}%",
-                style=palette.sev_ok if good else palette.sev_warn,
+                f"{name:<{label_width}}  ",
+                style=palette.accent if name == binding else palette.muted,
             )
-            if not good:
+            if estimate.pct_per_s is None:
+                # Percent needs two API samples of THIS window bracketing some
+                # local spend; tokens do not. Showing the token rate meanwhile
+                # proves the instrument is alive and names what it waits for.
+                if tokens_per_s > 0:
+                    text.append(f"{tokens_per_s:,.0f} tok/s", style=palette.foreground)
+                    text.append("  ·  calibrating", style=palette.muted)
+                else:
+                    text.append("idle", style=palette.muted)
+                continue
+            seconds_per_pct = estimate.seconds_per_pct
+            if seconds_per_pct is None:
+                text.append("idle", style=palette.sev_ok)
+            else:
+                text.append(f"{estimate.pct_per_s:.3f}%/s", style=palette.foreground)
                 text.append(
-                    f" (yours {pct_label(self._settings.threshold)}% — press r)",
-                    style=palette.sev_warn,
+                    f"  ·  1% every {seconds_per_pct:.0f}s", style=palette.muted
                 )
-        waste = self._waste_note(rate, palette)
+            if not estimate.calibrated:
+                text.append("  ·  API average", style=palette.muted)
+            if name == binding and self._settings is not None:
+                recommended = estimate.recommended_threshold()
+                if recommended is not None:
+                    text.append("   suggested ", style=palette.muted)
+                    good = recommended >= self._settings.threshold
+                    text.append(
+                        f"{pct_label(recommended)}%",
+                        style=palette.sev_ok if good else palette.sev_warn,
+                    )
+                    if not good:
+                        text.append(
+                            f" (yours {pct_label(self._settings.threshold)}%"
+                            " — press r)",
+                            style=palette.sev_warn,
+                        )
+        binding_estimate = self._tracker.estimate(active.number, binding)
+        waste = self._waste_note(binding_estimate.pct_per_s or 0.0, palette)
         if waste is not None:
             text.append("\n      ")
             text.append(waste)
-        self.query_one("#fleet-burn", Static).update(text)
+        target.update(text)
 
     def _waste_note(self, rate_pct_per_s: float, palette: Palette) -> Text | None:
         """Whether the current rate can finish the soonest-expiring quota.

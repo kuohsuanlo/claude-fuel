@@ -132,7 +132,7 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
         pct = spend["pct"]
         cell = oauth.fresh_reset_strings(spend)
         if cell:
-            rows.append(("$$", f"{pct:>3.0f}%   resets {cell[1]:<12}  ${used:,.2f} / ${limit:,.2f}"))
+            rows.append(("$$", f"{pct:>3.0f}%   resets {cell[1]:<16}  ${used:,.2f} / ${limit:,.2f}"))
         else:
             rows.append(("$$", f"{pct:>3.0f}%   ${used:,.2f} / ${limit:,.2f}"))
     for label, w in (("5h", usage.get("five_hour")), ("7d", usage.get("seven_day"))):
@@ -142,7 +142,7 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
             cell = oauth.fresh_reset_strings(w)
             if cell:
                 countdown, clock = cell
-                rows.append((label, f"{w['pct']:>3.0f}%   resets {clock:<12}  in {countdown}{marker}"))
+                rows.append((label, f"{w['pct']:>3.0f}%   resets {clock:<16}  in {countdown}{marker}"))
             else:
                 rows.append((label, f"{w['pct']:>3.0f}%{marker}"))
     for w in usage.get("scoped") or []:
@@ -152,7 +152,7 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
         cell = oauth.fresh_reset_strings(w)
         if cell:
             countdown, clock = cell
-            rows.append((w["name"], f"{w['pct']:>3.0f}%   resets {clock:<12}  in {countdown}{marker}"))
+            rows.append((w["name"], f"{w['pct']:>3.0f}%   resets {clock:<16}  in {countdown}{marker}"))
         else:
             rows.append((w["name"], f"{w['pct']:>3.0f}%{marker}"))
     width = max((len(label) for label, _ in rows), default=0) + 1  # label + ':'

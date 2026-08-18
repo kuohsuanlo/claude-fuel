@@ -56,10 +56,14 @@ class FleetSegment:
 
     @property
     def deadline_text(self) -> str:
-        """``8/19 14:00`` — the calendar instant the quota expires."""
+        """``8/19 Wed 14:00`` — the calendar instant the quota expires.
+
+        The weekday earns its three characters: a deadline is only actionable
+        once you know whether it lands before or after the weekend.
+        """
         if self.reset_ts is None:
             return "—"
-        return datetime.fromtimestamp(self.reset_ts).strftime("%-m/%-d %H:%M")
+        return datetime.fromtimestamp(self.reset_ts).strftime("%-m/%-d %a %H:%M")
 
     def countdown_text(self, now: float) -> str:
         """``20h`` / ``6d`` — how long is left, at the coarsest useful unit."""

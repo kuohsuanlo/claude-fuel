@@ -214,10 +214,10 @@ class TestCalibration:
     def test_uncalibrated_falls_back_to_api_average(self, projects: Path):
         clock = FakeClock()
         tracker, _ = self._tracker(projects, clock)
-        tracker.observe("1", 10.0, clock.now)
+        tracker.observe("1", "5h", 10.0, clock.now)
         clock.advance(600.0)
-        tracker.observe("1", 16.0, clock.now)
-        est = tracker.estimate("1")
+        tracker.observe("1", "5h", 16.0, clock.now)
+        est = tracker.estimate("1", "5h")
         assert est.source == "api"
         assert est.calibrated is False
         assert est.pct_per_s == pytest.approx(0.01)
@@ -225,25 +225,25 @@ class TestCalibration:
     def test_calibrates_from_bracketed_interval(self, projects: Path):
         clock = FakeClock()
         tracker, path = self._tracker(projects, clock)
-        tracker.observe("1", 10.0, clock.now)
+        tracker.observe("1", "5h", 10.0, clock.now)
         clock.advance(60.0)
         _append(path, _assistant_line(message_id="m1", ts=clock.now, output=200))
         tracker.sensor.poll()
-        tracker.observe("1", 12.0, clock.now)
+        tracker.observe("1", "5h", 12.0, clock.now)
         # 2 pct across 1000 weighted tokens.
         assert tracker.pct_per_token() == pytest.approx(0.002)
-        est = tracker.estimate("1")
+        est = tracker.estimate("1", "5h")
         assert est.source == "local"
         assert est.calibrated is True
 
     def test_window_rollover_is_not_calibration_data(self, projects: Path):
         clock = FakeClock()
         tracker, path = self._tracker(projects, clock)
-        tracker.observe("1", 90.0, clock.now)
+        tracker.observe("1", "5h", 90.0, clock.now)
         clock.advance(60.0)
         _append(path, _assistant_line(message_id="m1", ts=clock.now, output=200))
         tracker.sensor.poll()
-        tracker.observe("1", 2.0, clock.now)  # window reset
+        tracker.observe("1", "5h", 2.0, clock.now)  # window reset
         assert tracker.pct_per_token() is None
 
     def test_remote_burn_is_not_attributed_to_local_tokens(self, projects: Path):
@@ -251,9 +251,9 @@ class TestCalibration:
         same account. Real, but not a statement about our tokens-to-pct ratio."""
         clock = FakeClock()
         tracker, _ = self._tracker(projects, clock)
-        tracker.observe("1", 10.0, clock.now)
+        tracker.observe("1", "5h", 10.0, clock.now)
         clock.advance(60.0)
-        tracker.observe("1", 30.0, clock.now)
+        tracker.observe("1", "5h", 30.0, clock.now)
         assert tracker.pct_per_token() is None
 
     def test_restated_snapshot_is_idempotent(self, projects: Path):
@@ -261,25 +261,25 @@ class TestCalibration:
         must not add observations or calibration samples."""
         clock = FakeClock()
         tracker, path = self._tracker(projects, clock)
-        tracker.observe("1", 10.0, clock.now)
+        tracker.observe("1", "5h", 10.0, clock.now)
         clock.advance(60.0)
         _append(path, _assistant_line(message_id="m1", ts=clock.now, output=200))
         tracker.sensor.poll()
-        tracker.observe("1", 12.0, clock.now)
+        tracker.observe("1", "5h", 12.0, clock.now)
         first = tracker.pct_per_token()
         for _ in range(5):
-            tracker.observe("1", 12.0, clock.now)
+            tracker.observe("1", "5h", 12.0, clock.now)
         assert tracker.pct_per_token() == first
 
     def test_accounts_keep_separate_observations(self, projects: Path):
         clock = FakeClock()
         tracker, _ = self._tracker(projects, clock)
-        tracker.observe("1", 10.0, clock.now)
-        tracker.observe("2", 80.0, clock.now)
+        tracker.observe("1", "5h", 10.0, clock.now)
+        tracker.observe("2", "5h", 80.0, clock.now)
         clock.advance(100.0)
-        tracker.observe("1", 20.0, clock.now)
-        assert tracker.estimate("1").pct_per_s == pytest.approx(0.1)
-        assert tracker.estimate("2").pct_per_s is None
+        tracker.observe("1", "5h", 20.0, clock.now)
+        assert tracker.estimate("1", "5h").pct_per_s == pytest.approx(0.1)
+        assert tracker.estimate("2", "5h").pct_per_s is None
 
 
 class TestEstimateMath:
@@ -347,12 +347,12 @@ class TestPerAccountCalibration:
         return BurnTracker(sensor=sensor, clock=clock), _session(projects)
 
     def _bracket(self, tracker, path, clock, account, pct_from, pct_to, output):
-        tracker.observe(account, pct_from, clock.now)
+        tracker.observe(account, "5h", pct_from, clock.now)
         clock.advance(60.0)
         _append(path, _assistant_line(
             message_id=f"{account}-{clock.now}", ts=clock.now, output=output))
         tracker.sensor.poll()
-        tracker.observe(account, pct_to, clock.now)
+        tracker.observe(account, "5h", pct_to, clock.now)
 
     def test_accounts_do_not_share_a_scale(self, projects: Path):
         """A big-plan account and a small-plan one calibrate to different
@@ -363,23 +363,27 @@ class TestPerAccountCalibration:
         # #1: 1 pct per 1000 weighted tokens. #2: 4 pct for the same spend.
         self._bracket(tracker, path, clock, "1", 10.0, 11.0, 200)
         self._bracket(tracker, path, clock, "2", 10.0, 14.0, 200)
-        assert tracker.pct_per_token("1") == pytest.approx(0.001)
-        assert tracker.pct_per_token("2") == pytest.approx(0.004)
+        assert tracker.pct_per_token("1", "5h") == pytest.approx(0.001)
+        assert tracker.pct_per_token("2", "5h") == pytest.approx(0.004)
 
-    def test_uncalibrated_account_borrows_the_pooled_ratio(self, projects: Path):
-        """Better than reporting nothing for the first minutes of a new
-        account, and replaced the moment it brackets an interval of its own."""
+    def test_uncalibrated_account_borrows_the_same_window_from_a_peer(
+        self, projects: Path
+    ):
+        """Window size dominates and plan size only scales it, so another
+        account's ratio for the SAME window is a far better guess than
+        nothing — and it is replaced the moment this account brackets an
+        interval of its own."""
         clock = FakeClock()
         tracker, path = self._tracker(projects, clock)
         self._bracket(tracker, path, clock, "1", 10.0, 12.0, 200)
-        assert tracker.pct_per_token("2") == pytest.approx(0.002)
+        assert tracker.pct_per_token("2", "5h") == pytest.approx(0.002)
 
     def test_own_samples_win_over_the_pool(self, projects: Path):
         clock = FakeClock()
         tracker, path = self._tracker(projects, clock)
         self._bracket(tracker, path, clock, "1", 10.0, 12.0, 200)
         self._bracket(tracker, path, clock, "2", 10.0, 18.0, 200)
-        assert tracker.pct_per_token("2") == pytest.approx(0.008)
+        assert tracker.pct_per_token("2", "5h") == pytest.approx(0.008)
 
 
 class TestCalibrationPersistence:
@@ -387,21 +391,21 @@ class TestCalibrationPersistence:
         clock = FakeClock()
         sensor = TranscriptBurnSensor(projects, clock=clock)
         original = BurnTracker(sensor=sensor, clock=clock)
-        original._calibration["1"] = __import__("collections").deque(
+        original._calibration["1\x005h"] = __import__("collections").deque(
             [(2.0, 1000.0), (1.0, 500.0)]
         )
         restored = BurnTracker(sensor=sensor, clock=clock)
         restored.restore_calibration(original.calibration_state())
-        assert restored.pct_per_token("1") == original.pct_per_token("1")
+        assert restored.pct_per_token("1", "5h") == original.pct_per_token("1", "5h")
 
     @pytest.mark.parametrize(
         "state",
         [
-            None, "nope", {}, {"accounts": "nope"}, {"accounts": {"1": "nope"}},
-            {"accounts": {"1": [[1.0]]}},
-            {"accounts": {"1": [["a", "b"]]}},
-            {"accounts": {"1": [[1.0, 0.0]]}},   # zero tokens: undefined ratio
-            {"accounts": {"1": [[True, True]]}},  # bools are not measurements
+            None, "nope", {}, {"windows": "nope"}, {"windows": {"1|5h": "nope"}},
+            {"windows": {"1|5h": [[1.0]]}},
+            {"windows": {"1|5h": [["a", "b"]]}},
+            {"windows": {"1|5h": [[1.0, 0.0]]}},   # zero tokens: undefined ratio
+            {"windows": {"1|5h": [[True, True]]}},  # bools are not measurements
         ],
     )
     def test_malformed_state_leaves_it_uncalibrated(self, projects: Path, state):
@@ -414,9 +418,9 @@ class TestCalibrationPersistence:
     def test_restore_is_bounded(self, projects: Path):
         tracker = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
         tracker.restore_calibration(
-            {"accounts": {"1": [[1.0, 100.0]] * 500}}
+            {"windows": {"1|5h": [[1.0, 100.0]] * 500}}
         )
-        assert len(tracker._calibration["1"]) <= 24
+        assert len(tracker._calibration["1\x005h"]) <= 24
 
 
 class TestTokenRateIsAlwaysAvailable:

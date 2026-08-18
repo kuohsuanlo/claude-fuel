@@ -1954,3 +1954,55 @@ class TestFleetScreen:
             await settle(pilot)
             assert app.screen._tracker.pct_per_token() is None
             assert self._text(app, "#fleet-bars")
+
+
+@pytest.mark.asyncio
+class TestFleetStatusLine:
+    """The pet and the engine's commentary share one line."""
+
+    def _app(self, tmp_path):
+        from claude_swap.tui.app import CswapApp
+
+        return CswapApp(
+            FakeSwitcher(
+                [make_account(1, active=True), make_account(2)], tmp_path
+            ),
+            start="fleet",
+        )
+
+    @staticmethod
+    def _text(app) -> str:
+        from textual.widgets import Static
+
+        rendered = app.screen.query_one("#fleet-status", Static).render()
+        return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+    async def test_h_hides_the_commentary_but_never_the_pet(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """The pet is the proof the instrument is still ticking; a screen with
+        no moving part looks identical to a wedged one."""
+        app = self._app(tmp_path)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            app.screen._log_note("something happened")
+            assert "something happened" in self._text(app)
+            await pilot.press("h")
+            await pilot.pause()
+            assert "something happened" not in self._text(app)
+            assert self._text(app).strip(), "the pet must still be drawn"
+            await pilot.press("h")
+            await pilot.pause()
+            assert "something happened" in self._text(app)
+
+    async def test_only_the_latest_event_is_kept(self, tmp_path, fake_fleet_engine):
+        """A scrolling log was mostly the same sentence repeated, and it pushed
+        the thing worth reading off the bottom."""
+        app = self._app(tmp_path)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            app.screen._on_engine_event(NoSwitchEvent(reason="cooldown"))
+            app.screen._on_engine_event(NoSwitchEvent(reason="below-threshold"))
+            text = self._text(app)
+            assert "below-threshold" in text
+            assert "cooldown" not in text

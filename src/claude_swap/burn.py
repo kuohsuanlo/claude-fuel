@@ -415,9 +415,37 @@ class BurnTracker:
     # understating it on the small ones — and understating it is the direction
     # that lets a threshold be overshot.
     _calibration: dict[str, deque[tuple[float, float]]] = field(default_factory=dict)
+    # Which account the machine is currently spending; see `note_active`.
+    _active: str | None = None
 
-    def observe(self, account: str, pct: float | None, fetched_at: float) -> None:
-        """Record one API-derived utilization reading for ``account``.
+    def note_active(self, account: str | None) -> None:
+        """Tell the tracker which account the machine is currently spending.
+
+        Calibration divides a window's percentage movement by the tokens this
+        machine spent in the same interval, and those tokens land on whichever
+        account was ACTIVE. An interval that spans a switch therefore charges
+        one account's percentage with another's tokens. Rather than try to
+        apportion it, the baselines are dropped on a switch so the next
+        interval starts clean — one lost sample against a permanently skewed
+        ratio.
+        """
+        if account == self._active:
+            return
+        self._active = account
+        self._observations.clear()
+
+    def observe(
+        self, account: str, window: str, pct: float | None, fetched_at: float
+    ) -> None:
+        """Record one API reading for ONE named window of ``account``.
+
+        PER WINDOW, not per account. The 5-hour and weekly windows are
+        different sizes, so a token is a different fraction of each — measured
+        on a live fleet, mixing them gave 411k, 2,148k and 348k tokens per
+        percent from three consecutive samples of the same account, because
+        the binding window flipped from 7d to 5h partway through. Averaging
+        those understated the burn rate roughly threefold, which is the
+        direction that lets a threshold be overshot.
 
         Idempotent per fetch: re-reporting the same ``fetched_at`` (every
         surface re-reads the same stored row between fetches) neither adds an
@@ -425,7 +453,8 @@ class BurnTracker:
         """
         if pct is None:
             return
-        history = self._observations.setdefault(account, deque(maxlen=2))
+        key = f"{account}\u0000{window}"
+        history = self._observations.setdefault(key, deque(maxlen=2))
         if history and history[-1][0] >= fetched_at:
             return  # same or older snapshot than the one already held
         previous = history[-1] if history else None
@@ -453,12 +482,14 @@ class BurnTracker:
             # attributable to local tokens — excluded from calibration so the
             # ratio stays a property of THIS machine's transcripts.
             return
-        samples = self._calibration.setdefault(account, deque())
+        samples = self._calibration.setdefault(key, deque())
         samples.append((delta_pct, delta_tokens))
         while len(samples) > _CALIBRATION_SAMPLES:
             samples.popleft()
 
-    def pct_per_token(self, account: str | None = None) -> float | None:
+    def pct_per_token(
+        self, account: str | None = None, window: str | None = None
+    ) -> float | None:
         """Calibrated percent-per-weighted-token, or None before first bracket.
 
         Ratio of the SUMS rather than the mean of the ratios: intervals differ
@@ -473,9 +504,16 @@ class BurnTracker:
         account would otherwise show for its first few minutes.
         """
         samples: list[tuple[float, float]] = []
-        if account is not None:
-            samples = list(self._calibration.get(account, ()))
-        if not samples:
+        if account is not None and window is not None:
+            samples = list(self._calibration.get(f"{account}\u0000{window}", ()))
+        if not samples and window is not None:
+            # Another account's ratio for the SAME window is a far better
+            # guess than this account's ratio for a different one: window size
+            # dominates, plan size only scales it.
+            for key, pairs in self._calibration.items():
+                if key.endswith(f"\u0000{window}"):
+                    samples.extend(pairs)
+        if not samples and window is None:
             for pairs in self._calibration.values():
                 samples.extend(pairs)
         if not samples:
@@ -499,9 +537,12 @@ class BurnTracker:
         """
         return {
             "schemaVersion": 1,
-            "accounts": {
-                account: [[d, t] for d, t in pairs]
-                for account, pairs in self._calibration.items()
+            # Keyed "account|window": the ratio belongs to a window, not to
+            # an account, and a cache that forgot which would restore the same
+            # mixing bug it was written to fix.
+            "windows": {
+                key.replace("\u0000", "|"): [[d, t] for d, t in pairs]
+                for key, pairs in self._calibration.items()
                 if pairs
             },
         }
@@ -515,12 +556,16 @@ class BurnTracker:
         """
         if not isinstance(state, dict):
             return
-        accounts = state.get("accounts")
-        if not isinstance(accounts, dict):
+        windows = state.get("windows")
+        if not isinstance(windows, dict):
+            # Pre-fix caches keyed by account alone mixed two window sizes
+            # into one ratio; there is no way to unmix them, so they are
+            # dropped rather than restored wrong.
             return
-        for account, pairs in accounts.items():
-            if not isinstance(account, str) or not isinstance(pairs, list):
+        for label, pairs in windows.items():
+            if not isinstance(label, str) or not isinstance(pairs, list):
                 continue
+            account = label.replace("|", "\u0000")
             restored: deque[tuple[float, float]] = deque()
             for pair in pairs[-_CALIBRATION_SAMPLES:]:
                 if (
@@ -535,11 +580,21 @@ class BurnTracker:
                 self._calibration[account] = restored
 
     def estimate(
-        self, account: str, *, window_s: float = INSTANT_WINDOW_S
+        self,
+        account: str,
+        window: str | None = None,
+        *,
+        window_s: float = INSTANT_WINDOW_S,
     ) -> BurnEstimate:
-        """Current burn rate for ``account``, best instrument available."""
+        """Current burn rate for ONE window of ``account``.
+
+        ``window`` names which utilization the rate is expressed in — the
+        caller's binding window, normally. Without it the tracker falls back
+        to whatever it has, which is only meaningful on a fleet whose windows
+        happen to be the same size.
+        """
         tokens_per_s = self.sensor.tokens_per_s(window_s)
-        k = self.pct_per_token(account)
+        k = self.pct_per_token(account, window)
         if k is not None:
             return BurnEstimate(
                 pct_per_s=k * tokens_per_s,
@@ -547,7 +602,7 @@ class BurnTracker:
                 calibrated=True,
                 tokens_per_s=tokens_per_s,
             )
-        history = self._observations.get(account)
+        history = self._observations.get(f"{account}\u0000{window}") if window else None
         if history and len(history) == 2:
             (t0, p0), (t1, p1) = history[0], history[1]
             span = t1 - t0

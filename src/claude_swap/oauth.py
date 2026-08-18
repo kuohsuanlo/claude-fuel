@@ -332,13 +332,20 @@ def format_reset(resets_at: str) -> tuple[str, str]:
 
 
 def reset_clock_string(reset_utc: datetime, now_utc: datetime) -> str:
-    """Absolute reset time in local time: "20:39" same-day, else "Jul 5 08:59"."""
+    """Absolute reset time in local time: "20:39" same-day, else "Jul 5 Sat 08:59".
+
+    The weekday is carried on any date that is not today. A bare "Aug 23" is
+    a lookup — the reader has to work out whether that is tomorrow, the
+    weekend, or next week — and that is exactly the judgement these numbers
+    exist to support. Same-day resets keep the bare clock: "today" is already
+    the answer, and a weekday there would be noise.
+    """
     reset_local = reset_utc.astimezone()
     now_local = now_utc.astimezone()
     if reset_local.date() == now_local.date():
         return reset_local.strftime("%H:%M")
     day = str(reset_local.day)
-    return reset_local.strftime(f"%b {day} %H:%M")
+    return reset_local.strftime(f"%b {day} %a %H:%M")
 
 
 def fresh_reset_strings(window: dict) -> tuple[str, str] | None:

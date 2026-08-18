@@ -7123,10 +7123,13 @@ class TestBurstGuard:
         def poll(self) -> None:
             pass
 
-        def observe(self, account, pct, fetched_at) -> None:
-            self.observed.append((account, pct, fetched_at))
+        def note_active(self, account) -> None:
+            self.active = account
 
-        def estimate(self, _account):
+        def observe(self, account, window, pct, fetched_at) -> None:
+            self.observed.append((account, window, pct, fetched_at))
+
+        def estimate(self, _account, _window=None):
             from claude_swap.burn import BurnEstimate
 
             if self._recommended is None:
@@ -7184,7 +7187,10 @@ class TestBurstGuard:
         """Calibration needs the same percentages the decision uses."""
         h = self._harness(temp_home, recommended=99.9)
         h.tick_with_usage({"1": _usage(40), "2": _usage(5)})
-        assert any(account == "1" for account, _, _ in h.engine._burn.observed)
+        assert any(account == "1" for account, _, _, _ in h.engine._burn.observed)
+        assert {w for _, w, _, _ in h.engine._burn.observed} >= {"5h", "7d"}, (
+            "each window is calibrated on its own scale"
+        )
 
     def test_sensor_failure_never_breaks_a_tick(self, temp_home):
         """Burn sensing is an optimisation; a switcher that stops switching

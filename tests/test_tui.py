@@ -2123,7 +2123,9 @@ class TestPetFrameRate:
         )
         async with app.run_test(size=(120, 40)) as pilot:
             await settle(pilot)
-            app.screen._burning = lambda: True     # awake: tokens are flowing
+            # Busy: tokens flowing hard, so he swings at the full frame rate.
+            app.screen._burning = lambda: True
+            app.screen._swing_divisor = lambda: 1
             changes, elapsed = await self._pose_changes(app, pilot)
             due = elapsed / SPRITE_FRAME_S
             assert changes >= due * 0.6, (
@@ -2164,3 +2166,34 @@ class TestPetFrameRate:
                 assert sprite.frames[i] != sprite.frames[(i + 1) % n], (
                     f"frame {i} repeats its neighbour"
                 )
+
+
+class TestSwingFollowsTheBurnRate:
+    """The swing rate IS the burn rate — that is what makes the pet an
+    instrument rather than a decoration."""
+
+    @staticmethod
+    def _divisor(rate: float) -> int:
+        from claude_swap.tui.fleetview import FleetScreen
+
+        screen = FleetScreen.__new__(FleetScreen)
+        screen._sensor = type("S", (), {"tokens_per_s": lambda self, w: rate})()
+        return FleetScreen._swing_divisor(screen)
+
+    def test_busier_means_fewer_frames_per_swing(self):
+        assert self._divisor(8000) < self._divisor(2000) < self._divisor(100)
+
+    def test_the_fastest_swing_is_one_frame_per_pose(self):
+        assert self._divisor(50_000) == 1
+
+    def test_an_idle_machine_still_swings_rather_than_freezing(self):
+        """He is only asleep when nothing has burned for a while; a brief lull
+        should slow the pick, not stop it dead."""
+        assert self._divisor(0) >= 1
+
+    def test_no_sensor_is_survivable(self):
+        from claude_swap.tui.fleetview import FleetScreen
+
+        screen = FleetScreen.__new__(FleetScreen)
+        screen._sensor = None
+        assert FleetScreen._swing_divisor(screen) >= 1

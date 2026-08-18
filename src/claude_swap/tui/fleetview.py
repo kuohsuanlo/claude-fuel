@@ -64,6 +64,11 @@ SPRITE_FRAME_S = 0.22
 # 4.5 fps looks agitated, which is the opposite of the thing being shown.
 _SLEEP_SLOWDOWN = 5
 
+# (weighted tokens per second, timer frames per swing frame), fastest first.
+# Logarithmic, because token rates span orders of magnitude between one quiet
+# edit and a fleet of subagents; a linear map would sit pinned at one end.
+_SWING_STEPS = ((4000.0, 1), (1500.0, 2), (400.0, 3), (0.0, 4))
+
 # The sleep puffs, top row first. A row's puff is chosen by its distance from
 # the current phase, so the whole column appears to rise.
 _ZZZ = ("zZ", "z", "", "Z", "")
@@ -152,22 +157,22 @@ class FleetScreen(Screen):
         # The pet sits in its own column on the RIGHT. Below the gauges it
         # pushed the account list off short terminals; beside them it costs no
         # vertical space at all, which is the whole reason it can be this size.
-        with Horizontal(id="fleet-body"):
-            with Vertical(id="fleet-main"):
-                yield from self._compose_main()
-            yield Static("", id="fleet-status")
-        yield Footer()
-
-    def _compose_main(self) -> ComposeResult:
         with Vertical(id="fleet-top"):
             yield Static("", id="fleet-headline")
             yield Static("", id="fleet-bars")
             yield Static("", id="fleet-burn")
-            yield Static("", id="fleet-accounts")
-            # The engine's line sits under Running instances, where it was
+            # The pet sits BESIDE the account list, not down the whole right
+            # edge: the gauges want the full width and the list is the only
+            # block tall enough to park something next to.
+            with Horizontal(id="fleet-body"):
+                yield Static("", id="fleet-accounts")
+                yield Static("", id="fleet-status")
+            yield Static("", id="fleet-instances")
+            # The engine's line goes under Running instances, where it was
             # before: in the pet's narrow column it wrapped across four rows
             # and read as damage.
             yield Static("", id="fleet-log")
+        yield Footer()
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -442,9 +447,10 @@ class FleetScreen(Screen):
         # pet report something the numbers do not: whether the burn reading is
         # a measurement of work or of an idle minute.
         asleep = not self._burning()
-        sprite = pets.SLEEPING if asleep else pets.AWAKE
         if asleep:
-            frame //= _SLEEP_SLOWDOWN
+            sprite, frame = pets.SLEEPING, frame // _SLEEP_SLOWDOWN
+        else:
+            sprite, frame = pets.WORKING, frame // self._swing_divisor()
         rows = render_sprite(sprite, frame, dim=asleep)
         text = Text(no_wrap=True, overflow="ellipsis")
         for index, row in enumerate(rows):
@@ -464,7 +470,7 @@ class FleetScreen(Screen):
         # A caption under the icon, so the state is stated as well as drawn.
         text.append("\n ")
         text.append(
-            "Beep is sleeping…" if asleep else "Beep is working…",
+            "Beep is sleeping…" if asleep else "Beep is working !",
             style=palette.muted if asleep else palette.accent,
         )
         self._update_status(text)
@@ -481,6 +487,20 @@ class FleetScreen(Screen):
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append(self._status_line(palette))
         target.update(text)
+
+    def _swing_divisor(self) -> int:
+        """How many timer frames one pickaxe frame lasts — fewer when busier.
+
+        The swing rate IS the burn rate; that is what makes the pet an
+        instrument rather than a decoration. The scale is logarithmic because
+        token rates span orders of magnitude between a quiet edit and a fleet
+        of subagents, and a linear map would sit pinned at one end.
+        """
+        rate = self._sensor.tokens_per_s(_BURN_WINDOW_S) if self._sensor else 0.0
+        for floor, divisor in _SWING_STEPS:
+            if rate >= floor:
+                return divisor
+        return _SWING_STEPS[-1][1]
 
     def _burning(self) -> bool:
         """Whether this machine is spending tokens right now."""
@@ -1044,8 +1064,13 @@ class FleetScreen(Screen):
                     ("└ " if position == len(lines) - 1 else "├ "), style=palette.track
                 )
                 text.append(line, style=palette.muted)
-        self._append_running_instances(text, palette)
         target.update(text)
+        instances = Text(no_wrap=True, overflow="ellipsis")
+        self._append_running_instances(instances, palette)
+        try:
+            self.query_one("#fleet-instances", Static).update(instances)
+        except Exception:
+            pass
 
     @staticmethod
     def _append_running_instances(text: Text, palette: Palette) -> None:
@@ -1073,7 +1098,6 @@ class FleetScreen(Screen):
                 groups[key] = groups.get(key, 0) + 1
         if not groups:
             return
-        text.append("\n\n")
         text.append("Running instances:", style=f"bold {palette.foreground}")
         for (label, cwd), count in groups.items():
             text.append("\n  ")

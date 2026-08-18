@@ -1,0 +1,67 @@
+BEEP — native extraction from the 448x448 reference (really 64x64 @7x)
+figure = 11 wide x 41 tall, 17 colours, nothing quantised
+
+palette (dark -> light):
+   a  #333120
+   b  #786450
+   c  #8c755e
+   d  #96896e
+   e  #9c8e72
+   f  #a19275
+   g  #ad9174
+   h  #a8997b
+   i  #b8997b
+   j  #b3a282
+   k  #c2a282
+   l  #bda8a0
+   m  #bfaaa3
+   n  #c2b08d
+   o  #c6b0a8
+   p  #ccb5ad
+   q  #d1bab2
+
+parts:  L=left arm  R=right arm  (=left leg  )=right leg  . = transparent
+        (a limb is only the pixels FREE of the body outline)
+
+     x: 0123456789A
+  y 0  ...hhhfddd.   head
+  y 1  ...hhhfl...   head
+  y 2  ...hhhfl...   head
+  y 3  ...hhhhl...   head
+  y 4  ...ahhal...   head
+  y 5  ...ahham...   head
+  y 6  ...hhhpm...   head
+  y 7  ...hhhpm...   head
+  y 8  ....hhmm...   head
+  y 9  ....ffmm...   head
+  y10  ......ll...   neck
+  y11  ......ll...   neck
+  y12  ....jhhhhj.   shoulders
+  y13  ...jhhhhhhj   shoulders
+  y14  ...ehhhhhhh   shoulders
+  y15  ...ehhhhheh   shoulders
+  y16  ...ehhhhheh   shoulders
+  y17  ...eehhheeh   shoulders
+  y18  ...meehee.R   torso + arms
+  y19  ...L.ene..R   torso + arms
+  y20  ..L..one..R   torso + arms
+  y21  .L...oqo..R   torso + arms
+  y22  L....oqo..R   torso + arms
+  y23  ....goqo..R   torso + arms
+  y24  ...gcoql..R   torso + arms
+  y25  ...gccolg.R   torso + arms
+  y26  ...ggccccg.   hips / skirt
+  y27  ...gkggggi.   hips / skirt
+  y28  ...gkggkki.   hips / skirt
+  y29  ...gkggkki.   hips / skirt
+  y30  ...gkkgkki.   hips / skirt
+  y31  ....kkggki.   hips / skirt
+  y32  ....m..gki.   hips / skirt
+  y33  ....(...)..   legs
+  y34  ....(...)..   legs
+  y35  ....(...)..   legs
+  y36  ....(...)..   legs
+  y37  ....(...)..   legs
+  y38  ....(...)..   legs
+  y39  ....(...)..   legs
+  y40  ........)..   legs

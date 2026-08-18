@@ -2154,13 +2154,14 @@ class TestPetFrameRate:
                 f"slowed sleep rate allows ({ceiling:.0f})"
             )
 
-    def test_no_pose_repeats_a_neighbour(self):
+    @staticmethod
+    def test_no_pose_repeats_a_neighbour():
         """The visible rate is the rate the POSE changes, never the rate the
         timer fires — a cycle that repeats a pose divides the apparent frame
         rate by however many times it repeats."""
         from claude_swap.tui import pets
 
-        for sprite in (pets.AWAKE, pets.SLEEPING):
+        for sprite in (pets.WORKING, pets.SLEEPING):
             n = len(sprite.frames)
             for i in range(n):
                 assert sprite.frames[i] != sprite.frames[(i + 1) % n], (
@@ -2197,3 +2198,67 @@ class TestSwingFollowsTheBurnRate:
         screen = FleetScreen.__new__(FleetScreen)
         screen._sensor = None
         assert FleetScreen._swing_divisor(screen) >= 1
+
+
+@pytest.mark.asyncio
+class TestPetNeverWraps:
+    """A sprite one cell wider than its box wraps every single row."""
+
+    async def test_no_row_exceeds_the_widgets_content_width(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A leading space put the sprite's last column past the content
+        width and the whole picture reflowed — pixel art cannot survive a
+        wrap, every row lands in the wrong place."""
+        from textual.widgets import Static
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(
+            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
+        )
+        async with app.run_test(size=(120, 44)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            for burning in (False, True):
+                screen._burning = (lambda value: (lambda: value))(burning)
+                screen._render_status(Palette.DARK)
+                widget = screen.query_one("#fleet-status", Static)
+                rendered = widget.render()
+                text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+                width = widget.content_region.width
+                for index, line in enumerate(text.split("\n")):
+                    assert len(line) <= width, (
+                        f"{'working' if burning else 'sleeping'} row {index} is "
+                        f"{len(line)} cells in a {width}-cell box"
+                    )
+
+    async def test_the_renderer_adds_no_indent(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Flush left: an indent is exactly what pushed it over the edge. The
+        artwork's own first column may be transparent — that is the sprite,
+        not padding — so this measures the WIDEST row against the sprite's
+        width rather than looking for a leading space."""
+        from textual.widgets import Static
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(
+            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
+        )
+        async with app.run_test(size=(120, 44)) as pilot:
+            await settle(pilot)
+            app.screen._burning = lambda: True
+            app.screen._render_status(Palette.DARK)
+            rendered = app.screen.query_one("#fleet-status", Static).render()
+            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            from claude_swap.tui import pets
+
+            sprite_rows = text.split("\n")[: pets.WORKING.height // 2]
+            assert max(len(row) for row in sprite_rows) == pets.WORKING.width, (
+                "the rendered sprite is not exactly its own width — something "
+                "is padding it"
+            )

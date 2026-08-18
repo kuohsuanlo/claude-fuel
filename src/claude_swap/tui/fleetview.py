@@ -456,7 +456,9 @@ class FleetScreen(Screen):
         for index, row in enumerate(rows):
             if index:
                 text.append("\n")
-            text.append(" ")
+            # FLUSH LEFT, no indent. A leading space put the sprite's last
+            # column past the widget's content width, and every row wrapped —
+            # the picture arrived one cell wider than the space it was given.
             text.append(row)
             if asleep and index < len(_ZZZ):
                 # The zZzZ drifts up and away over the loop. Letters are drawn
@@ -468,7 +470,7 @@ class FleetScreen(Screen):
                     text.append(" ")
                     text.append(puff, style=palette.muted)
         # A caption under the icon, so the state is stated as well as drawn.
-        text.append("\n ")
+        text.append("\n")
         text.append(
             "Beep is sleeping…" if asleep else "Beep is working !",
             style=palette.muted if asleep else palette.accent,

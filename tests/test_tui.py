@@ -2006,3 +2006,45 @@ class TestFleetStatusLine:
             text = self._text(app)
             assert "below-threshold" in text
             assert "cooldown" not in text
+
+
+@pytest.mark.asyncio
+class TestWasteProjectionUnits:
+    """The projection must be in the units of the quota that expires."""
+
+    @staticmethod
+    def _text(app) -> str:
+        from textual.widgets import Static
+
+        r = app.screen.query_one("#fleet-burn", Static).render()
+        return r.plain if hasattr(r, "plain") else str(r)
+
+    async def test_uses_the_weekly_rate_not_the_binding_rate(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A point of the 5-hour window is a completely different quantity of
+        work from a point of the weekly one. Feeding the 5h rate into a weekly
+        projection reported "all spendable" on quota that will certainly be
+        lost — the exact false reassurance this screen exists to prevent."""
+        from claude_swap.tui.app import CswapApp
+
+        fake = FakeSwitcher(
+            [make_account(1, active=True, entry=make_entry(50.0, 50.0))], tmp_path
+        )
+        app = CswapApp(fake, start="fleet")
+        async with app.run_test(size=(110, 32)) as pilot:
+            await settle(pilot)
+            tracker = app.screen._tracker
+            # The 5h scale is 100,000x the weekly one here. Read on the 5h
+            # scale this quota is spent in minutes; read correctly it cannot
+            # be spent in the three days it has left.
+            tracker._calibration["1\x005h"] = collections.deque([(100.0, 1000.0)])
+            tracker._calibration["1\x007d"] = collections.deque([(1.0, 1_000_000.0)])
+            app.screen._sensor._samples.append((time.time(), 1000.0))
+            app.screen._display_tick()
+            text = self._text(app)
+            assert "wastes" in text, (
+                "at the weekly scale this quota cannot be spent in time; "
+                f"got: {text!r}"
+            )
+            assert "all spendable" not in text

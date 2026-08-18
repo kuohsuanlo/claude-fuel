@@ -849,23 +849,42 @@ class FleetScreen(Screen):
                             " — press r)",
                             style=palette.sev_warn,
                         )
-        binding_estimate = self._tracker.estimate(active.number, binding)
-        waste = self._waste_note(binding_estimate.pct_per_s or 0.0, palette)
+        # THE WEEKLY rate, not the binding one. The quota that expires is
+        # weekly, and a percentage point of the 5-hour window is a completely
+        # different quantity of work — feeding the 5h rate into a weekly
+        # projection reported "all spendable" on quota that will certainly be
+        # lost, which is the exact false reassurance this screen exists to
+        # prevent.
+        weekly = self._weekly_window_label(active)
+        waste = self._waste_note(
+            self._tracker.estimate(active.number, weekly) if weekly else None,
+            palette,
+        )
         if waste is not None:
             text.append("\n      ")
             text.append(waste)
         target.update(text)
 
-    def _waste_note(self, rate_pct_per_s: float, palette: Palette) -> Text | None:
+    def _weekly_window_label(self, account) -> str | None:
+        """Which reported window carries this account's expiring quota."""
+        from claude_swap.autoswitch import weekly_binding
+
+        binding = weekly_binding(account.usage.last_good, self._models())
+        return binding[0] if binding else None
+
+    def _waste_note(self, estimate, palette: Palette) -> Text | None:
         """Whether the current rate can finish the soonest-expiring quota.
 
-        Silent when nothing is expiring or the rate is zero: a confident "you
-        will waste nothing" derived from an idle minute is worse than saying
-        nothing, because it is exactly the moment before a heavy turn starts.
+        Silent on an unmeasured or idle rate. A confident "you will waste
+        nothing" derived from an idle minute is worse than saying nothing —
+        it is exactly the moment before a heavy turn starts — and one derived
+        from an UNCALIBRATED weekly window would be a guess presented as a
+        measurement.
         """
         now = time.time()
+        rate_pct_per_s = (estimate.pct_per_s or 0.0) if estimate is not None else 0.0
         segments = [s for s in self._segments(now) if s.reset_ts is not None]
-        if not segments or rate_pct_per_s <= 0:
+        if not segments or rate_pct_per_s <= 0 or estimate is None:
             return None
         soonest = min(segments, key=lambda s: s.reset_ts or float("inf"))
         hours = ((soonest.reset_ts or now) - now) / 3600.0

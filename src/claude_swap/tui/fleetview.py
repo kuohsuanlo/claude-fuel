@@ -58,7 +58,7 @@ DISPLAY_INTERVAL_S = 1.0
 # happens), so counting them made the walk stutter and skip. Deriving the frame
 # from elapsed time means a repaint cannot change the phase and the gait runs
 # at exactly this period no matter how often the screen is redrawn.
-SPRITE_FRAME_S = 0.35
+SPRITE_FRAME_S = 0.22
 
 # Quota expiring inside this window is what the headline "about to lose"
 # figure counts. A day is the horizon a person can actually act on — anything

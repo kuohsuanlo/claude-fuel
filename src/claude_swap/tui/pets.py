@@ -1,19 +1,26 @@
-"""The pet: a tiny Kenshi skeleton that proves the instrument is still ticking.
+"""The pet: Beep, traced pixel-for-pixel from the source art.
 
-DELIBERATELY SMALL. The screen recomputes every second, and a grid of static
-figures looks identical whether it is measuring or wedged — the pet exists to
-settle that, and nothing more. Eight pixels square (four text rows) is enough
-to read "there is a figure, and it is moving" at a glance, and refusing to
-grow past that is what keeps it an indicator instead of a portrait competing
-with the gauges above it.
+WHY A PET AT ALL. The screen recomputes every second, and a grid of static
+figures looks identical whether it is measuring or wedged. The pet settles
+that and nothing more — which is why `h` hides the engine's commentary but
+never hides the pet.
 
-It is CAT-LON in outline: the mad king of Kenshi, a Skeleton on a throne in
-the Ashlands with the Falling Sun. Two details survive the shrink because they
-are the only two that read at this size — a bare lit-optic head (Skeletons can
-never equip headgear, so the pale head over the rusted torso IS the
-silhouette) and the weapon, planted in the ground while watching and raised
-while working. The state change is the weapon moving corner to corner, which
-is legible with the animation paused and with no colour at all.
+WHO. Beep, the Southern Hive Prince: the tall narrow head, the two dark
+compound eyes, the reedy limbs. Kenshi's most-loved character, and cheerful
+where the rest of that world is not.
+
+NOT DRAWN BY HAND. The reference is a 448x448 PNG that is really a 64x64
+pixel sprite scaled 7x; the block size was recovered from the run lengths, the
+figure separated from the "BEEP" lettering beside it by column occupancy, and
+the result reduced to 10x16 by taking each target cell's MODE colour rather
+than its average. Mode matters at this size: averaging turns a one-pixel arm
+into a faint smear, and a cell is kept as soon as a third of it is opaque,
+because a majority rule erases those limbs outright. Fifteen colours were then
+banded by luminance into five inks plus the dashboard's accent.
+
+Ten pixels wide by sixteen tall is eight text rows, and Beep is meant to be
+tall and thin — squashing him to four rows was tried and lost the head, which
+is the whole silhouette.
 """
 
 from __future__ import annotations
@@ -21,83 +28,64 @@ from __future__ import annotations
 from claude_swap.tui.sprite import Sprite
 
 _PALETTE = {
-    "K": "#191417",  # void
-    "M": "#8d7a63",  # worn brass — the bare skeleton head
-    "R": "#8a4b2a",  # rusted ancient samurai armour
-    "O": "#d7875f",  # the Falling Sun, and fuel (the dashboard accent)
-    "C": "#7fe3ea",  # the lit optic
+    "K": "#333120",  # the compound eyes
+    "D": "#786450",  # deepest shade — feet, far arm
+    "B": "#95846a",  # mid shade
+    "M": "#ad987a",  # the chitin body tone
+    "L": "#c4aca0",  # highlight
+    "O": "#d7875f",  # fuel drawn in (the dashboard accent)
 }
 
-#: Idle: the optic blinks, the planted blade glints.
+_BASE = (
+    "...MMMMBB.",
+    "...MMMML..",
+    "...KMMKL..",
+    "...MMMLL..",
+    "......LL..",
+    "...MMMMMMM",
+    "...BMMMMMB",
+    "...LBBMBBL",
+    "DMM..LLL.M",
+    "...MMLLL.L",
+    "...MBBLLMD",
+    "...MLMMLLM",
+    "...MLLMMLM",
+    "....L...L.",
+    "....M...M.",
+    "....D...D.",
+)
+
+
+def _edit(rows: tuple[str, ...], **replacements: str) -> tuple[str, ...]:
+    """A frame as deltas from the base pose, keyed ``r<row index>``.
+
+    Frames are written as edits rather than as whole grids so a change to the
+    figure lands everywhere at once, and so the diff of an animation tweak
+    shows the tweak instead of sixteen unchanged lines.
+    """
+    out = list(rows)
+    for key, value in replacements.items():
+        out[int(key[1:])] = value
+    return tuple(out)
+
+
+#: Idle: Beep blinks, and his arm sags a row. Awake, not working.
 WATCHING = Sprite(
     palette=_PALETTE,
     frames=(
-        (
-            "..MMM...",
-            ".MCKM..O",
-            "..MMM..O",
-            ".RRRRR.O",
-            ".RRRRR.O",
-            "..RRR..O",
-            "..R.R..O",
-            "..R.R...",
-        ),
-        (
-            "..MMM...",
-            ".MKKM..O",  # optic dark: power diverting, his machine-fault tic
-            "..MMM..O",
-            ".RRRRR.O",
-            ".RRRRR.O",
-            "..RRR..O",
-            "..R.R..O",
-            "..R.R...",
-        ),
-        (
-            "..MMM...",
-            ".MCKM..O",
-            "..MMM..O",
-            ".RRRRR.O",
-            ".RRRRR.O",
-            "..RRR..O",
-            "..R.R..O",
-            "..R.RO..",
-        ),
+        _BASE,
+        _edit(_BASE, r2="...MMMML.."),
+        _edit(_BASE, r8=".MM..LLL.M", r9="D..MMLLL.L"),
     ),
 )
 
-#: Working: the Falling Sun is up, and fuel is drawn in from the left.
+#: Working: the arm comes up and fuel drifts in from the left, one pixel per
+#: frame, until it reaches him.
 WORKING = Sprite(
     palette=_PALETTE,
     frames=(
-        (
-            ".....OOO",
-            "..MMM.OO",
-            ".MCCM.O.",
-            ".RRRRR..",
-            "ORRRRR..",
-            "..RRR...",
-            "..R.R...",
-            "..R.R...",
-        ),
-        (
-            "......OO",
-            "..MMM.OO",
-            ".MCCM.OO",
-            ".RRRRR.O",
-            ".RRRRR..",
-            "O.RRR...",
-            "..R.R...",
-            "..R.R...",
-        ),
-        (
-            "........",
-            "..MMM..O",
-            ".MCCM.OO",
-            ".RRRRROO",
-            ".RRRRR.O",
-            "..RRR...",
-            "O.R.R...",
-            "..R.R...",
-        ),
+        _edit(_BASE, r4="D.....LL..", r7="O..LBBMBBL", r8=".MM..LLL.M"),
+        _edit(_BASE, r4="D.....LL..", r7=".O.LBBMBBL", r8=".MM..LLL.M"),
+        _edit(_BASE, r4="D.....LL..", r7="..OLBBMBBL", r8=".MM..LLL.M"),
     ),
 )

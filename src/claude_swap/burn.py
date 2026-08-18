@@ -389,7 +389,11 @@ class BurnEstimate:
         if self.pct_per_s is None:
             return None
         margin = max(0.0, self.pct_per_s) * burst_multiplier * burst_window_s
-        return max(_THRESHOLD_LO, min(_THRESHOLD_HI, 100.0 - margin))
+        # Rounded to a tenth, which is the resolution settings.json accepts.
+        # Unrounded it renders as "99.86597411%" — ten significant digits of a
+        # measurement whose inputs are a 60-second sample and an integer
+        # percentage, i.e. eight digits of false precision.
+        return round(max(_THRESHOLD_LO, min(_THRESHOLD_HI, 100.0 - margin)), 1)
 
 
 @dataclass
@@ -429,7 +433,10 @@ class BurnTracker:
         interval starts clean — one lost sample against a permanently skewed
         ratio.
         """
-        if account == self._active:
+        if account is None or account == self._active:
+            # Unknown is not a switch. A snapshot that cannot name the active
+            # account would otherwise clear the baselines, and clearing them
+            # on alternate ticks means no interval ever closes.
             return
         self._active = account
         self._observations.clear()

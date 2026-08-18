@@ -456,3 +456,40 @@ class TestIntervalBoundary:
             "a token spent AT the boundary belongs to the interval that ended "
             "there, not to the one starting there"
         )
+
+
+class TestRecommendationPrecision:
+    def test_recommendation_is_rounded_to_a_settable_value(self):
+        """Unrounded it renders as "99.86597411%" — ten significant digits of
+        a number whose inputs are a 60-second sample and an integer
+        percentage. settings.json accepts a tenth; report a tenth."""
+        estimate = BurnEstimate(pct_per_s=0.00067012945)
+        value = estimate.recommended_threshold()
+        assert value == round(value, 1)
+
+
+class TestActiveAccountTracking:
+    def test_unknown_active_is_not_treated_as_a_switch(self, projects: Path):
+        """A snapshot that cannot name the active account would otherwise
+        clear the baselines, and clearing them on alternate ticks means no
+        interval ever closes."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        tracker = BurnTracker(sensor=sensor, clock=clock)
+        tracker.note_active("1")
+        tracker.observe("1", "5h", 10.0, clock.now)
+        tracker.note_active(None)
+        assert tracker._observations, "an unknown active must not wipe history"
+
+    def test_a_real_switch_drops_the_baselines(self, projects: Path):
+        """An interval spanning a switch charges one account's percentage with
+        another's tokens; one lost sample beats a permanently skewed ratio."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        tracker = BurnTracker(sensor=sensor, clock=clock)
+        tracker.note_active("1")
+        tracker.observe("1", "5h", 10.0, clock.now)
+        tracker.note_active("2")
+        assert not tracker._observations

@@ -661,14 +661,10 @@ class FleetScreen(Screen):
 
     @staticmethod
     def _rank_colours(count: int, palette: Palette) -> list[str]:
-        """Red → amber → green across ``count`` accounts, soonest expiry first.
+        """Red → amber → green across ``count`` ranks, most urgent first.
 
-        Colour carries the DEADLINE RANK here, not the utilization severity it
-        carries everywhere else in the tool. The bar's whole job is "which of
-        these dies first", and rank is the only encoding that stays legible
-        when two accounts have similar percentages but a week between their
-        resets. Interpolated rather than a fixed triple so a fleet of six
-        still gets six distinguishable steps of the same ramp.
+        Interpolated rather than a fixed triple so a fleet of six still gets
+        six distinguishable steps of the same ramp.
         """
         def _rgb(value: str) -> tuple[int, int, int]:
             value = value.lstrip("#")
@@ -688,6 +684,30 @@ class FleetScreen(Screen):
             ]
             out.append("#%02x%02x%02x" % tuple(channels))
         return out
+
+    def _account_colours(
+        self, segments: list[fleet.FleetSegment], palette: Palette
+    ) -> dict[str, str]:
+        """One colour per ACCOUNT, ranked on the weekly waste axis, for every bar.
+
+        Colour is an identity here, not a per-row measurement. Ranking each
+        bar separately made the same account red on the session row and amber
+        on the weekly one, which reads as the account changing rather than as
+        three views of the same fleet — and the session window is the wrong
+        thing to colour by anyway: it recycles in hours, so nothing in it is
+        ever "about to be wasted".
+
+        Unreadable accounts sort last and take the calm end of the ramp: an
+        account nobody can schedule around is not an urgent one.
+        """
+        ordered = sorted(
+            segments,
+            key=lambda seg: (
+                -(seg.risk if seg.risk is not None else -1.0), int(seg.number)
+            ),
+        )
+        ramp = self._rank_colours(len(ordered), palette)
+        return {seg.number: ramp[i] for i, seg in enumerate(ordered)}
 
     def _window_segments(self, label: str, now: float) -> list[fleet.FleetSegment]:
         snapshot = self.app.snapshot
@@ -791,6 +811,8 @@ class FleetScreen(Screen):
         width = self._bar_width()
         text = Text(no_wrap=True, overflow="ellipsis")
         label_width = max(len(label) for label, _ in rows)
+        colour_of = self._account_colours(segments, palette)
+        gutter = 2 + label_width + 2
         for index, (label, row) in enumerate(rows):
             # Latest deadline first, soonest last: the soonest lands at the
             # right edge of the coloured run.
@@ -800,13 +822,27 @@ class FleetScreen(Screen):
                     -(s.reset_ts if s.reset_ts is not None else 0.0), int(s.number)
                 ),
             )
-            colours = list(reversed(self._rank_colours(len(row), palette)))
-            if index:
-                text.append("\n")
-            text.append(f"  {label:<{label_width}}  ", style=palette.muted)
-            filled, spent, marker_col = self._gauge(
+            colours = [colour_of.get(seg.number, palette.muted) for seg in row]
+            filled, spent, edges = self._gauge(
                 row, colours, width, self._account_weights(row)
             )
+            if index:
+                text.append("\n")
+            # ▼ ABOVE: the account whose quota in THIS window dies first.
+            # An account with no reported reset is skipped rather than shown
+            # with a dash — "expires —" is not a deadline, and picking it made
+            # the marker name an account that was in no danger at all.
+            expiring = [
+                seg for seg in row if seg.reset_ts is not None and seg.headroom_pct > 0
+            ]
+            if expiring:
+                soonest = min(expiring, key=lambda seg: seg.reset_ts or 0.0)
+                self._marker(
+                    text, gutter + edges.get(soonest.number, 0), "▼",
+                    soonest, colour_of.get(soonest.number, palette.muted), palette,
+                    now, suffix="",
+                )
+            text.append(f"  {label:<{label_width}}  ", style=palette.muted)
             text.append(filled)
             text.append(spent)
             text.append("  ")
@@ -818,17 +854,39 @@ class FleetScreen(Screen):
                 countdown = segment.countdown_text(now)
                 if countdown:
                     text.append(f" {countdown}", style=palette.muted)
-            soonest = row[-1] if row else None
-            if soonest is not None:
+            # ▲ BELOW: where quota is being drawn from right now. Two markers
+            # rather than one because "what dies first" and "what I am
+            # spending" are different questions, and the whole point of the
+            # screen is the gap between them.
+            active = next((seg for seg in row if seg.is_active), None)
+            if active is not None:
                 text.append("\n")
-                text.append(" " * (4 + label_width + marker_col))
-                text.append("▲ ", style=colours[-1])
-                text.append(soonest.label, style=colours[-1])
-                clock = soonest.countdown_text(now)
-                text.append(
-                    f" {soonest.deadline_text}" + (f" ({clock})" if clock else ""),
-                    style=palette.muted,
+                self._marker(
+                    text, gutter + edges.get(active.number, 0), "▲",
+                    active, colour_of.get(active.number, palette.accent), palette,
+                    now, suffix=" active", newline=False,
                 )
+        text.append("\n")
+
+    def _marker(
+        self, text, column, glyph, segment, colour, palette, now, *,
+        suffix="", newline=True,
+    ) -> None:
+        """One pointer under or over a segment's own edge, then its deadline."""
+        text.append(" " * max(0, column))
+        text.append(f"{glyph} ", style=colour)
+        text.append(segment.label, style=colour)
+        countdown = segment.countdown_text(now)
+        if segment.reset_ts is not None:
+            text.append(
+                f" {segment.deadline_text}" + (f" ({countdown})" if countdown else ""),
+                style=palette.muted,
+            )
+        if suffix:
+            text.append(suffix, style=f"bold {palette.accent}")
+        if newline:
+            text.append("\n")
+
         self.query_one("#fleet-bars", Static).update(text)
 
     def _gauge(
@@ -837,8 +895,8 @@ class FleetScreen(Screen):
         colours: list[str],
         width: int,
         weights: list[float],
-    ) -> tuple[Text, Text, int]:
-        """``(remaining run, spent run, column of the last remaining cell)``.
+    ) -> tuple[Text, Text, dict[str, int]]:
+        """``(remaining run, spent run, each account's last filled column)``.
 
         Each account's slice is proportional to its PLAN SIZE, not to the
         number of accounts. Percentages are relative to their own plan, so
@@ -854,7 +912,9 @@ class FleetScreen(Screen):
         total_weight = sum(weights) or float(max(1, len(row)))
         filled = Text()
         spent = Text()
-        marker_col = 0
+        # Every account's own right-hand edge, so a marker can point at the
+        # account it names instead of at whichever one happens to be last.
+        edges: dict[str, int] = {}
         for segment, colour, weight in zip(row, colours, weights):
             share = max(2, round(width * weight / total_weight))
             keep = segment.headroom_pct / 100.0 * share
@@ -869,7 +929,7 @@ class FleetScreen(Screen):
                 # three accounts from one long one.
                 filled.append(glyph * (cells - 1), style=colour)
                 filled.append(_CAP if not segment.blocked else glyph, style=colour)
-                marker_col = len(filled.plain) - 1
+                edges[segment.number] = len(filled.plain) - 1
             rest = share - cells
             if rest > 0:
                 if spent.plain:
@@ -877,7 +937,7 @@ class FleetScreen(Screen):
                 spent.append(_EMPTY * rest, style=palette.track)
         if spent.plain:
             spent = Text(" ") + spent
-        return filled, spent, marker_col
+        return filled, spent, edges
 
     def _render_burn(self, palette: Palette) -> None:
         """One rate per window, because there is no such thing as "the" rate.

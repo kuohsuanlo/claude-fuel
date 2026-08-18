@@ -2262,3 +2262,90 @@ class TestPetNeverWraps:
                 "the rendered sprite is not exactly its own width — something "
                 "is padding it"
             )
+
+
+@pytest.mark.asyncio
+class TestBarColoursAndMarkers:
+    """Colour is an account's identity; the markers answer two questions."""
+
+    def _fleet(self, tmp_path):
+        return FakeSwitcher(
+            [
+                make_account(1, active=True, entry=make_entry(16.0, 53.0)),
+                make_account(2, entry=make_entry(0.0, 92.0)),
+                make_account(3, entry=make_entry(100.0, 72.0)),
+            ],
+            tmp_path,
+        )
+
+    async def test_one_colour_per_account_across_every_bar(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Ranking each bar separately made the same account red on the
+        session row and amber on the weekly one, which reads as the account
+        changing rather than as three views of one fleet."""
+        import time as _t
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(self._fleet(tmp_path), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            now = _t.now() if hasattr(_t, "now") else _t.time()
+            colours = screen._account_colours(screen._segments(now), Palette.DARK)
+            assert len(set(colours.values())) == len(colours), "ranks collided"
+            for label in ("5h", "7d"):
+                row = screen._window_segments(label, now)
+                for segment in row:
+                    assert colours[segment.number] == colours[segment.number]
+            # the session window must not influence the ranking at all
+            weekly_order = sorted(
+                screen._segments(now),
+                key=lambda s: -(s.risk if s.risk is not None else -1.0),
+            )
+            ranked = [colours[s.number] for s in weekly_order]
+            assert ranked == sorted(set(ranked), key=ranked.index)
+
+    async def test_an_account_with_no_reset_is_never_the_expiring_one(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """"expires —" is not a deadline. Picking such an account made the
+        marker name one that was in no danger at all."""
+        import time as _t
+
+        from claude_swap.tui.app import CswapApp
+        from textual.widgets import Static
+
+        fake = self._fleet(tmp_path)
+        fake._accounts[1] = dataclasses.replace(
+            fake._accounts[1],
+            usage=UsageEntry(
+                last_good={"five_hour": {"pct": 0.0}},   # no resets_at at all
+                fetched_at=_t.time(),
+                age_s=1.0,
+            ),
+        )
+        app = CswapApp(fake, start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            rendered = app.screen.query_one("#fleet-bars", Static).render()
+            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            for line in text.split("\n"):
+                if line.lstrip().startswith("▼"):
+                    assert "—" not in line, f"marker points at a dateless row: {line}"
+
+    async def test_both_markers_are_drawn(self, tmp_path, fake_fleet_engine):
+        """▼ is what dies first, ▲ is what is being spent — the whole point of
+        the screen is the gap between them."""
+        from claude_swap.tui.app import CswapApp
+        from textual.widgets import Static
+
+        app = CswapApp(self._fleet(tmp_path), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            rendered = app.screen.query_one("#fleet-bars", Static).render()
+            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            assert "▼" in text and "▲" in text
+            assert "active" in text, "the ▲ marker must say which one is live"

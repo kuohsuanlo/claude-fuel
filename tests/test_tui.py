@@ -2333,24 +2333,165 @@ class TestBarColoursAndMarkers:
         from claude_swap.tui.app import CswapApp
         from claude_swap.tui.theme import Palette
 
-        app = CswapApp(self._fleet(tmp_path), start="fleet")
+        fake = self._fleet(tmp_path)
+        app = CswapApp(fake, start="fleet")
         async with app.run_test(size=(140, 46)) as pilot:
             await settle(pilot)
             screen = app.screen
             now = _t.now() if hasattr(_t, "now") else _t.time()
             colours = screen._account_colours(screen._segments(now), Palette.DARK)
             assert len(set(colours.values())) == len(colours), "ranks collided"
-            for label in ("5h", "7d"):
-                row = screen._window_segments(label, now)
-                for segment in row:
-                    assert colours[segment.number] == colours[segment.number]
-            # the session window must not influence the ranking at all
-            weekly_order = sorted(
-                screen._segments(now),
-                key=lambda s: -(s.risk if s.risk is not None else -1.0),
+            # THE SESSION WINDOW MUST NOT INFLUENCE THE RANKING AT ALL. Asserted
+            # by moving it and demanding the map not budge: the previous version
+            # of this test compared each colour to itself and to a re-sort of
+            # its own output, so it held no matter what the ranking did.
+            before = dict(colours)
+            fake._accounts[0] = dataclasses.replace(
+                fake._accounts[0],
+                usage=UsageEntry(
+                    last_good={
+                        "five_hour": {"pct": 99.0, "resets_at": _iso_in(600)},
+                        "seven_day": {"pct": 53.0, "resets_at": _iso_in(86400 * 3)},
+                    },
+                    fetched_at=_t.time() - 5.0,
+                    age_s=5.0,
+                ),
             )
-            ranked = [colours[s.number] for s in weekly_order]
-            assert ranked == sorted(set(ranked), key=ranked.index)
+            await settle(pilot)
+            after = screen._account_colours(screen._segments(_t.time()), Palette.DARK)
+            assert after == before, (
+                "the 5-hour window moved the colours; it recycles in hours, so "
+                "nothing in it is ever about to be wasted"
+            )
+
+    @staticmethod
+    def _fleet_by_reset(tmp_path, rows):
+        """``rows`` of ``(number, active, weekly pct, seconds until it resets)``."""
+        return FakeSwitcher(
+            [
+                make_account(
+                    number,
+                    active=active,
+                    entry=UsageEntry(
+                        last_good={
+                            "five_hour": {"pct": 0.0, "resets_at": _iso_in(3600)},
+                            "seven_day": {"pct": pct, "resets_at": _iso_in(seconds)},
+                        },
+                        fetched_at=time.time() - 5.0,
+                        age_s=5.0,
+                    ),
+                )
+                for number, active, pct, seconds in rows
+            ],
+            tmp_path,
+        )
+
+    async def test_colour_is_distance_to_the_reset_furthest_is_greenest(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """The axis is how far the deadline is from now, nothing else.
+
+        Colour used to rank on waste risk — headroom DIVIDED BY that distance —
+        which paints an account with 8 points left the calmest thing on screen
+        precisely because it has nothing to lose. "Nearly exhausted" and
+        "plenty of time" came out the same green.
+        """
+        import time as _t
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(
+            self._fleet_by_reset(
+                tmp_path,
+                [
+                    (1, True, 64.0, 86400 * 6),    # furthest deadline
+                    (2, False, 92.0, 86400 * 4),   # middle, but almost spent
+                    (3, False, 72.0, 3600 * 12),   # soonest deadline
+                ],
+            ),
+            start="fleet",
+        )
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            now = _t.time()
+            segments = screen._segments(now)
+            colours = screen._account_colours(segments, Palette.DARK)
+            ramp = screen._rank_colours(len(segments), Palette.DARK)
+            assert ramp[0] == Palette.DARK.sev_crit
+            assert ramp[-1] == Palette.DARK.sev_ok
+            by_distance = sorted(segments, key=lambda seg: seg.reset_ts or 0.0)
+            assert [colours[seg.number] for seg in by_distance] == ramp, (
+                "soonest reset must take the red end and furthest the green"
+            )
+            assert colours["3"] == Palette.DARK.sev_crit
+            assert colours["1"] == Palette.DARK.sev_ok
+            # Account 2 holds the least perishable quota of the three (8
+            # points). Under the risk axis that made it the GREENEST; its
+            # deadline sits in the middle, so its colour must too.
+            assert colours["2"] == ramp[1]
+
+    async def test_the_bar_runs_green_on_the_left_and_red_on_the_right(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A spectrum that is not monotonic is not a spectrum.
+
+        The order and the colour are two call sites that have to agree; they
+        are now read off one ranking, and this is what proves it on the pixels
+        rather than in the sort key.
+        """
+        from textual.widgets import Static
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(
+            self._fleet_by_reset(
+                tmp_path,
+                [
+                    (1, True, 64.0, 86400 * 6),
+                    (2, False, 92.0, 86400 * 4),
+                    (3, False, 72.0, 3600 * 12),
+                ],
+            ),
+            start="fleet",
+        )
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            rendered = app.screen.query_one("#fleet-bars", Static).render()
+            ramp = [c.lower() for c in app.screen._rank_colours(3, Palette.DARK)]
+            checked = 0
+            for line in rendered.split("\n"):
+                if "\u2501" not in line.plain:
+                    continue  # not a gauge row: the ▼/▲ markers live on their own
+                seen: list[str] = []
+                for span in sorted(line.spans, key=lambda sp: sp.start):
+                    # A span carries either the style string we passed in or a
+                    # resolved Style; Color.hex also comes back upper-cased.
+                    style = span.style
+                    if isinstance(style, str):
+                        hexed = style if style.startswith("#") else None
+                    else:
+                        foreground = getattr(style, "foreground", None)
+                        hexed = None if foreground is None else foreground.hex
+                    if hexed is None:
+                        continue
+                    hexed = hexed.lower()
+                    if hexed in ramp and (not seen or seen[-1] != hexed):
+                        seen.append(hexed)
+                # The gauge run and the percentage list after it draw the same
+                # accounts in the same order, so the spectrum appears once per
+                # group. Both must run green to red, hence the repetition.
+                spectrum = list(reversed(ramp))
+                assert seen and len(seen) % len(spectrum) == 0, (
+                    f"a group is truncated mid-spectrum: {seen}"
+                )
+                assert seen == spectrum * (len(seen) // len(spectrum)), (
+                    f"the run is not a spectrum left to right: {seen}"
+                )
+                checked += 1
+            assert checked, "no gauge row was rendered, so nothing was checked"
 
     async def test_an_account_with_no_reset_is_never_the_expiring_one(
         self, tmp_path, fake_fleet_engine

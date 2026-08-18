@@ -75,13 +75,19 @@ limit. Each is the **whole fleet's remaining quota for that window**, with
 every account's share packed to the left, so the length of the coloured run is
 how much fuel is left and the boundaries inside it are who holds it.
 
-- **Colour is an account's identity**, ranked once by how fast its weekly quota
-  is being wasted, and reused on all three bars. Green is in no danger, red
-  dies first. The bars are ordered on that same axis, so the spectrum always
-  runs green (left) to red (right) and a colour means the same thing on every
-  row. Ranking each row by its own reset — which is what it did first — made an
-  account amber on one bar and red on the next, and the colour stopped being an
-  identity at all.
+- **Colour is an account's identity**, ranked once by **how far its weekly
+  reset is from now** — furthest is green, soonest is red — and reused on all
+  three bars. The bars are ordered on that same ranking (it is literally the
+  reversed list, not a second sort), so the spectrum always runs green on the
+  left to red on the right and a colour means the same thing on every row.
+  Ranking each row by its own reset — which is what it did first — made an
+  account amber on one bar and red on the next, and the colour stopped being
+  an identity at all.
+- Colour deliberately does **not** follow the waste risk the strategy ranks by.
+  Risk is headroom *divided by* that distance, so an account with 8 points left
+  comes out the calmest thing on screen precisely because it has nothing to
+  lose — "nearly exhausted" and "plenty of time" painted the same green. The
+  deadline on its own is also the number already printed beside the bar.
 - **`▼` above** names the account whose quota in *that* window expires soonest;
   it is hidden when there is nothing left to lose.
 - **`▲` below** names the account being spent right now.

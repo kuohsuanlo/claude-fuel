@@ -713,10 +713,40 @@ class FleetScreen(Screen):
             out.append("#%02x%02x%02x" % tuple(channels))
         return out
 
+    @staticmethod
+    def _deadline_rank(
+        segments: list[fleet.FleetSegment],
+    ) -> list[fleet.FleetSegment]:
+        """Accounts by how far their deadline is from now, SOONEST FIRST.
+
+        THE ONE ORDERING the colour ramp and the bar both consume, taken from
+        this list rather than re-derived at each call site. Two places sorting
+        "the same way" is exactly how the ramp stopped being monotonic before.
+
+        Distance to the reset, not waste risk. Risk divides headroom BY that
+        distance, so an account with 8 points left comes out the calmest thing
+        on screen precisely because it has nothing left to lose — true, but it
+        paints "nearly exhausted" and "plenty of time" the same green. The
+        deadline on its own is also the number the reader is already looking
+        at in the dates printed beside the bar.
+
+        The reset is the account's BINDING weekly window — the one
+        ``segment_for`` sizes the segment by — so the colour always agrees
+        with the date next to it. No known reset sorts last and takes the calm
+        end: an account nobody can schedule around is not an urgent one.
+        """
+        return sorted(
+            segments,
+            key=lambda seg: (
+                seg.reset_ts if seg.reset_ts is not None else float("inf"),
+                int(seg.number),
+            ),
+        )
+
     def _account_colours(
         self, segments: list[fleet.FleetSegment], palette: Palette
     ) -> dict[str, str]:
-        """One colour per ACCOUNT, ranked on the weekly waste axis, for every bar.
+        """One colour per ACCOUNT, ranked on its deadline, for every bar.
 
         Colour is an identity here, not a per-row measurement. Ranking each
         bar separately made the same account red on the session row and amber
@@ -724,16 +754,8 @@ class FleetScreen(Screen):
         three views of the same fleet — and the session window is the wrong
         thing to colour by anyway: it recycles in hours, so nothing in it is
         ever "about to be wasted".
-
-        Unreadable accounts sort last and take the calm end of the ramp: an
-        account nobody can schedule around is not an urgent one.
         """
-        ordered = sorted(
-            segments,
-            key=lambda seg: (
-                -(seg.risk if seg.risk is not None else -1.0), int(seg.number)
-            ),
-        )
+        ordered = self._deadline_rank(segments)
         ramp = self._rank_colours(len(ordered), palette)
         return {seg.number: ramp[i] for i, seg in enumerate(ordered)}
 
@@ -841,21 +863,14 @@ class FleetScreen(Screen):
         label_width = max(len(label) for label, _ in rows)
         colour_of = self._account_colours(segments, palette)
         gutter = 2 + label_width + 2
-        # Least urgent first, most urgent last — ordered on the SAME axis the
-        # colour is ranked by, so the run always reads green on the left to red
-        # on the right. Ordering by each row's own reset while colouring by the
-        # weekly risk let the two disagree, and a spectrum that is not
-        # monotonic is not a spectrum.
+        # Furthest deadline first, soonest last — literally the REVERSE of the
+        # colour ranking, read off the same list instead of re-sorted, so the
+        # run always goes green on the left to red on the right and the two
+        # cannot drift apart. The account that dies first lands at the right
+        # edge of the coloured run, which is where consumption eats next.
         order = {
             seg.number: rank
-            for rank, seg in enumerate(
-                sorted(
-                    segments,
-                    key=lambda s: (
-                        s.risk if s.risk is not None else -1.0, -int(s.number)
-                    ),
-                )
-            )
+            for rank, seg in enumerate(reversed(self._deadline_rank(segments)))
         }
         for index, (label, row) in enumerate(rows):
             row = sorted(row, key=lambda s: order.get(s.number, 0))

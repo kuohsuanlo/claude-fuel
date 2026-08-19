@@ -46,6 +46,8 @@ from claude_swap import oauth, poll_policy
 from claude_swap.burn import (
     ACCOUNT_WIDE_WINDOWS,
     BURST_FLOOR_PCT,
+    BURST_MULTIPLIER,
+    BURST_WINDOW_S,
     BurnTracker,
     TranscriptBurnSensor,
     burning_models,
@@ -2114,6 +2116,31 @@ class AutoSwitchEngine:
             < was - RECOVERY_HYSTERESIS_S
         )
 
+    def _landing_margin(self, settings: AutoSwitchSettings, current: str) -> float:
+        """Headroom a destination must have to be worth switching to.
+
+        The same reserve the burst guard holds back on the active account:
+        moving onto one that cannot absorb a tick of the CURRENT burn buys
+        seconds and then needs another switch, which is how a task dies on a
+        freshly chosen account.
+
+        Zero when the guard is off or nothing is measured — an unmeasured rate
+        must not silently tighten a policy the user did not set, exactly as in
+        :meth:`_effective_threshold`.
+        """
+        if self._burn is None or not settings.burst_guard:
+            return 0.0
+        try:
+            estimate = self._burn.estimate(current)
+            if estimate.pct_per_s is None:
+                return 0.0
+            return max(
+                getattr(settings, "burst_floor_pct", BURST_FLOOR_PCT),
+                max(0.0, estimate.pct_per_s) * BURST_MULTIPLIER * BURST_WINDOW_S,
+            )
+        except Exception:  # pragma: no cover - sensing must never break a tick
+            return 0.0
+
     def _rank_candidates(
         self,
         *,
@@ -2194,6 +2221,17 @@ class AutoSwitchEngine:
             else 0.0  # unread unless all_above; never a live sentinel
         )
 
+        # A DESTINATION HAS TO SURVIVE A TICK, not merely be non-zero.
+        # "headroom > 0" is a POSITION test — the same error the burst guard
+        # exists to fix for the account you are ON, left unfixed for the one
+        # you move TO. Measured live: the engine landed on an account with 3%
+        # of its 5-hour window left while the machine burned 0.75 %/s, four
+        # seconds of work, and the user's task died on arrival. Accounts with
+        # far more room (0% and 21% used) were passed over, because the
+        # ranking key is weekly waste risk and says nothing about the short
+        # window that decides whether an account is usable at all right now.
+        landing_margin = self._landing_margin(settings, current)
+        starved: list[tuple[float, str]] = []
         qualifying: list[tuple[tuple, str]] = []
         fallback: list[tuple[tuple, str]] = []
         any_known = False
@@ -2204,6 +2242,12 @@ class AutoSwitchEngine:
             any_known = True          # it EXISTS and is readable either way
             if h <= 0:
                 continue  # itself at its limit — never a target
+            if h < landing_margin and num != no_return:
+                # Too thin to land on. Kept aside rather than dropped: if
+                # NOTHING clears the margin the fleet is simply short, and a
+                # few seconds somewhere still beats sitting at a hard limit.
+                starved.append((h, num))
+                continue
             if num == no_return:
                 continue  # the account we just left; see _no_return_account
             reset_ts = (
@@ -2351,6 +2395,11 @@ class AutoSwitchEngine:
         # Ascending by the strategy's key; list order (sequence order) breaks ties.
         qualifying = qualifying or fallback
         qualifying.sort(key=lambda t: t[0])
+        if not qualifying and starved:
+            # Nothing can absorb a full tick. Land on the ROOMIEST rather than
+            # whichever the weekly ranking liked: with every option short, how
+            # long each one lasts is the only thing separating them.
+            qualifying = [((0.0,), max(starved, key=lambda item: item[0])[1])]
         return [num for _, num in qualifying], any_known, active_reset_ts
 
     # -- adaptive usage scheduling ---------------------------------------------

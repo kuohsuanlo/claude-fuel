@@ -268,8 +268,18 @@ One point is the default because a point is the API's own resolution — it
 reports integer percentages, so a finer reserve holds back less than the
 smallest change the endpoint can report.
 
+**The same reserve gates the DESTINATION.** Requiring only `headroom > 0` of
+an account you are moving to is the identical position-test error, one step
+later: the engine landed on an account with 3% of its five-hour window left
+while the machine burned 0.75 %/s — four seconds — and the task died on
+arrival, with roomier accounts passed over because the ranking key is weekly
+waste risk and says nothing about the short window that decides whether an
+account is usable at all right now. A candidate must now clear the same margin
+the active account reserves. If nothing clears it the fleet is simply short,
+and the roomiest is taken rather than whichever the weekly ranking liked.
+
 ```bash
-cfuel config set autoswitch.burstGuard false     # off
+cfuel config set autoswitch.burstGuard false     # off (both guards)
 cfuel config set autoswitch.burstFloorPct 2      # hold back more than the default 1
 ```
 
@@ -454,7 +464,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2330 tests
+uv run pytest -q                       # 2333 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

@@ -2576,6 +2576,91 @@ class _MixSensor:
         pass
 
 
+class TestLandingMargin:
+    """A destination has to survive a tick, not merely be non-zero.
+
+    Reproduces the live incident under the strategy it happened on: waste-first
+    ranks by WEEKLY risk and says nothing about the 5-hour window that decides
+    whether an account can be used at all right now, so the roomiest weekly
+    quota won while its short window had seconds left in it.
+    """
+
+    class _Burn:
+        def __init__(self, pct_per_s):
+            from claude_swap.burn import BurnEstimate
+
+            self._est = BurnEstimate(pct_per_s=pct_per_s, calibrated=True)
+            self.sensor = _MixSensor()
+
+        def estimate(self, account, window=None, **kw):
+            return self._est
+
+        def observe(self, *a, **kw):
+            pass
+
+        def note_active(self, *a, **kw):
+            pass
+
+    def _seed(self, temp_home: Path, rate: float, **kw) -> EngineHarness:
+        # Threshold high enough that the EXISTING healthy-landing rule
+        # ((100-h) >= threshold) does not already exclude the thin account —
+        # otherwise this suite would pass without the rate guard existing.
+        kw.setdefault("threshold", 99.0)
+        h = EngineHarness(temp_home, strategy="waste-first", **kw)
+        for number, email in ((1, "a@example.com"), (2, "b@example.com"),
+                              (3, "c@example.com")):
+            h.seed(number, email)
+        h.make_live("a@example.com", 1)
+        h.engine._burn = self._Burn(rate)
+        return h
+
+    @staticmethod
+    def _usage(now: float, *, five: float, seven: float, hours: float) -> dict:
+        return {
+            "five_hour": {"pct": five, "resets_at": _iso_at(now + 3 * 3600)},
+            "seven_day": {"pct": seven, "resets_at": _iso_at(now + hours * 3600)},
+        }
+
+    def _fleet(self, h: EngineHarness, thin_five: float) -> dict:
+        now = h.clock()
+        return {
+            # Active at 30% used. It has to stay below the EFFECTIVE
+            # threshold, which the burst guard drops to 55 at this rate — at
+            # 60% the trigger flipped to an at-limit escape, and the escape
+            # path ranks on headroom, so the suite passed without the rate
+            # bound doing any of the work.
+            "1": self._usage(now, five=10.0, seven=30.0, hours=160.0),
+            # THIN on 5h, but by far the most perishable weekly quota (4.5 %/h)
+            "2": self._usage(now, five=thin_five, seven=10.0, hours=20.0),
+            # Roomy everywhere. Its risk (0.67 %/h) must still clear the
+            # hysteresis gate over the active account, or it could not be
+            # chosen at all and the test would prove nothing.
+            "3": self._usage(now, five=20.0, seven=20.0, hours=120.0),
+        }
+
+    def test_a_thin_destination_is_passed_over(self, temp_home):
+        """Landed on live: 3% of a 5-hour window at 0.75 %/s is four seconds,
+        and the task died on arrival while a roomier account was passed by."""
+        h = self._seed(temp_home, rate=0.75)
+        assert h.tick_with_usage(self._fleet(h, 97.0)) is TickOutcome.SWITCHED
+        assert h.active_number() == 3, "must not land on the 3%-left account"
+
+    def test_the_thin_one_still_wins_when_the_burn_is_slow(self, temp_home):
+        """A RATE bound, not a blanket ban: 3 points is a long time at a
+        trickle, and refusing it there would strand a fleet."""
+        h = self._seed(temp_home, rate=0.0)  # only the floor applies
+        assert h.tick_with_usage(self._fleet(h, 97.0)) is TickOutcome.SWITCHED
+        assert h.active_number() == 2, "3% clears the 1% floor"
+
+    def test_the_guard_being_off_restores_the_old_behaviour(self, temp_home):
+        """burstGuard=false opts out of the rate bound entirely, so the thin
+        account wins on weekly risk exactly as it did before."""
+        h = self._seed(temp_home, rate=0.75, burst_guard=False)
+        assert h.engine._landing_margin(h.engine.settings, "1") == 0.0
+        assert h.tick_with_usage(self._fleet(h, 97.0)) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+
 class TestMeasuredModelMix:
     """A per-model window gates only while that model is actually running."""
 

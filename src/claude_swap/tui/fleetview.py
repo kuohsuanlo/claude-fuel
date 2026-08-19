@@ -767,7 +767,12 @@ class FleetScreen(Screen):
             fleet.window_segment(
                 number=account.number, email=account.email, alias=account.alias,
                 usage=account.usage.last_good, label=label,
-                models=("all",),  # the model row needs scoped windows regardless
+                # The ENGINE's model list, never a hardcoded "all". A gauge
+                # drawn from a wider list than the decision reads is a gauge
+                # showing fuel nothing will ever act on: the Fable row sat at
+                # 100% while the engine, configured with no models, ranked
+                # that account the most urgent one to keep burning.
+                models=self._models(),
                 now=now, is_active=account.is_active,
             )
             for account in snapshot.accounts

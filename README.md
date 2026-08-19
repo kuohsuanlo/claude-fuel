@@ -218,6 +218,43 @@ percentages**: one percent of a weekly window is over a million weighted
 tokens, so the weekly scale only calibrates after real accumulated use and
 reads `API average` until it does.
 
+### Per-model weekly limits count by default
+
+An account reports a scoped weekly window per model (`Fable`, `Opus`) on top of
+its 5h and 7d ones. Upstream gates on those only when `autoswitch.model` names
+them, and the setting is unset by default — so the engine read the 5h/7d
+headroom of an account whose model quota was already gone.
+
+That is not a cosmetic gap. Caught live:
+
+```
+3: dev5   5h 90%   7d 95%   Fable 100% (!)      ← active
+09:25:53  no switch: already-burning-soonest
+          (no account is losing quota meaningfully faster than this one)
+```
+
+The engine ranked `dev5` the most urgent account to keep burning — on its 7d
+window, at 95%, with 4h34m left, scoring 1.09 %/h. Fable was at **100%**: no
+work needing that model could run there at all. Counting the scoped window
+makes the same account read headroom 0, risk 0.00 %/h, and the fleet moves.
+
+`autoswitch.model` therefore defaults to **`all`** — every scoped window the
+account reports. The API only reports one for a limit the account actually
+has, and a limit that exists will stop the work when it fills.
+
+```bash
+cswap config set autoswitch.model none        # ignore per-model limits
+cswap config set autoswitch.model Fable,Opus  # only these
+```
+
+`none` is a word rather than a blank because the load-time clamp turns any
+empty or non-string value back into the default.
+
+The same list now feeds the screen. The model gauge used to be built from a
+hardcoded `all` while the ranking read the setting, which is how a Fable bar
+at 100% came to sit above an engine that could not see it — the one thing a
+fuel gauge must never do.
+
 ### Plan sizes
 
 The usage API reports only utilization, so 40% of a 20× plan and 40% of a 5×
@@ -261,6 +298,7 @@ Linux). `cswap config` lists everything; the keys this fork adds:
 | `autoswitch.strategy` | `waste-first` | `waste-first`, `consume-first`, `best` |
 | `autoswitch.burstGuard` | `true` | Let the measured rate trigger early |
 | `autoswitch.accountWeights` | — | Relative plan sizes, `1=20,2=5` |
+| `autoswitch.model` | `all` | Per-model weekly limits that gate a switch; `none` to ignore |
 
 The threshold you set with `t` in the TUI is written here too, so it survives
 a restart.

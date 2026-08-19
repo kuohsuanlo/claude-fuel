@@ -2309,6 +2309,62 @@ class TestPetNeverWraps:
 
 
 @pytest.mark.asyncio
+class TestGaugesShowOnlyWhatTheEngineReads:
+    """A bar the decision cannot see is worse than no bar at all."""
+
+    @staticmethod
+    def _fleet(tmp_path, model):
+        import json as _json
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": model},
+        }))
+        return FakeSwitcher(
+            [
+                make_account(
+                    1, active=True,
+                    entry=make_entry(5.0, 95.0, scoped=[("Fable", 100.0)]),
+                ),
+                make_account(
+                    2, entry=make_entry(0.0, 64.0, scoped=[("Fable", 77.0)])
+                ),
+            ],
+            tmp_path,
+        )
+
+    async def _bars(self, pilot, app):
+        from textual.widgets import Static
+
+        await settle(pilot)
+        rendered = app.screen.query_one("#fleet-bars", Static).render()
+        return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+    async def test_the_model_row_is_drawn_when_the_engine_gates_on_it(
+        self, tmp_path, fake_fleet_engine
+    ):
+        from claude_swap.tui.app import CswapApp
+
+        app = CswapApp(self._fleet(tmp_path, "all"), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            assert "Fable" in await self._bars(pilot, app)
+
+    async def test_the_model_row_vanishes_when_the_engine_ignores_it(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """The row used to be built from a hardcoded ``("all",)`` while the
+        ranking read ``autoswitch.model``. With the setting unset that drew a
+        Fable gauge at 100% beside an engine that had ranked the account the
+        most urgent one to keep burning — the screen and the decision
+        disagreeing about what fuel even exists.
+        """
+        from claude_swap.tui.app import CswapApp
+
+        app = CswapApp(self._fleet(tmp_path, "none"), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            assert "Fable" not in await self._bars(pilot, app)
+
+
+@pytest.mark.asyncio
 class TestBarColoursAndMarkers:
     """Colour is an account's identity; the markers answer two questions."""
 

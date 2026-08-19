@@ -12,6 +12,7 @@ import pytest
 
 from claude_swap.exceptions import ConfigError
 from claude_swap.settings import (
+    parse_model_names,
     SETTING_SPECS,
     atomic_write_json,
     AutoSwitchSettings,
@@ -214,11 +215,29 @@ class TestSetUnsetSetting:
             set_setting(tmp_path, "autoswitch.model", "   ")
         assert not settings_path(tmp_path).exists()
 
-    def test_garbage_model_value_falls_back_to_none(self, tmp_path: Path):
+    def test_garbage_model_value_falls_back_to_the_default(self, tmp_path: Path):
         settings_path(tmp_path).write_text(
             json.dumps({"autoswitch": {"model": 123}})
         )
-        assert load_settings(tmp_path).model is None
+        assert load_settings(tmp_path).model == "all"
+
+    def test_a_stored_null_model_still_gates_on_scoped_windows(
+        self, tmp_path: Path
+    ):
+        """A settings.json written before "all" became the default carries an
+        explicit null, and that must not keep the old blind behaviour: the
+        clamp reverts any non-string to the default, which is the whole reason
+        the opt-out had to become a word."""
+        settings_path(tmp_path).write_text(
+            json.dumps({"autoswitch": {"model": None}})
+        )
+        assert parse_model_names(load_settings(tmp_path).model) == ("all",)
+
+    def test_none_is_the_explicit_opt_out(self, tmp_path: Path):
+        settings_path(tmp_path).write_text(
+            json.dumps({"autoswitch": {"model": "none"}})
+        )
+        assert parse_model_names(load_settings(tmp_path).model) == ()
 
     def test_set_rejects_bool_words_strictly(self, tmp_path: Path):
         assert set_setting(tmp_path, "autoswitch.includeApiKeyAccounts", "FALSE") is False

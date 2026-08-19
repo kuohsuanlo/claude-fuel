@@ -178,7 +178,12 @@ class TestCLI:
         assert excinfo.value.code == 2
 
     def test_switch_strategy_forwarded(self):
-        """--switch --strategy best forwards the strategy to switch()."""
+        """--switch --strategy best forwards the strategy to switch().
+
+        ``models`` comes through as the default ``("all",)`` and is reported
+        as coming from the setting, because that is now where it comes from —
+        per-model weekly limits gate a switch unless explicitly turned off.
+        """
         from claude_swap.settings import AutoSwitchSettings
 
         with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
@@ -190,7 +195,8 @@ class TestCLI:
             cli.main()
 
         switcher_cls.return_value.switch.assert_called_once_with(
-            strategy="best", json_output=False, models=(), model_source=None
+            strategy="best", json_output=False, models=("all",),
+            model_source="autoswitch.model",
         )
 
     def test_switch_strategy_falls_back_to_configured_model(self):

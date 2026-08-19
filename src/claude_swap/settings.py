@@ -73,12 +73,18 @@ class AutoSwitchSettings:
     include_api_key_accounts: bool = False
     unhealthy_ticks: int = 3
     # Comma-separated model display name(s) (e.g. "Fable" or "Fable,Opus"),
-    # or "all" for every scoped window an account reports. Each named model's
-    # per-model weekly limit is folded into the binding window, so the engine
-    # switches off an account whose model quota is exhausted even while its
-    # 5h/7d windows still have headroom. None = account-wide 5h/7d only
-    # (default).
-    model: str | None = None
+    # "all" for every scoped window an account reports, or "none" to ignore
+    # them. Each named model's per-model weekly limit is folded into the
+    # binding window, so the engine switches off an account whose model quota
+    # is exhausted even while its 5h/7d windows still have headroom.
+    #
+    # DEFAULTS TO "all", because the API only reports a scoped window for a
+    # limit the account actually has, and that limit WILL stop the work when
+    # it fills. Ignoring it was a real fault: an account sitting at Fable 100%
+    # was ranked the most urgent thing to keep burning — its 7d window still
+    # read 95%, so the engine saw headroom where the model had none, and the
+    # screen drew a Fable bar the decision could not see.
+    model: str | None = "all"
 
 
 @dataclass(frozen=True)
@@ -163,7 +169,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "autoswitch", "model", "model", "string",
-            help="Also switch on these models' weekly limits (e.g. Fable, Fable,Opus, or all)",
+            help="Models whose weekly limits also gate a switch (all, none, or e.g. Fable)",
         ),
         SettingSpec(
             "ui", "theme", "theme", "choice", choices=("dark", "light", "auto"),
@@ -211,8 +217,14 @@ def parse_account_weights(value: str | None) -> dict[str, float]:
 def parse_model_names(value: str | None) -> tuple[str, ...]:
     """Split a comma-separated model list, trimmed and case-insensitively
     deduped (first spelling wins). Shared by the auto engine and the manual
-    switch strategies so both read ``autoswitch.model`` identically."""
-    if not value:
+    switch strategies so both read ``autoswitch.model`` identically.
+
+    ``"none"`` is the explicit opt-out. It has to be a word rather than a
+    blank because the load-time clamp reverts an empty string to the default,
+    and the default is now ``"all"`` — so without a sentinel there would be no
+    way to say "ignore per-model limits" at all.
+    """
+    if not value or value.strip().lower() == "none":
         return ()
     seen: dict[str, str] = {}
     for part in value.split(","):

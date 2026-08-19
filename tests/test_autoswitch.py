@@ -2029,8 +2029,10 @@ class TestEventsShape:
         assert "#3: ?" in line
 
     def test_poll_event_windows_match_the_decision_set(self, temp_home):
-        # Scoped windows appear only when configured: rendering an ignored
-        # Fable 100% next to a switch onto that account would read as a bug.
+        # The poll line must show exactly the windows the decision read. An
+        # ignored Fable 100% rendered next to a switch ONTO that account reads
+        # as a bug — and the mirror image, a Fable the screen drew but the
+        # engine never saw, was one.
         usage = {
             "1": _usage(42),
             "2": {
@@ -2047,7 +2049,7 @@ class TestEventsShape:
             h.make_live("a@example.com", 1)
             return h
 
-        plain = build()
+        plain = build(model="none")   # the explicit opt-out; "all" is default
         plain.tick_with_usage(usage)
         poll = next(e for e in plain.events if isinstance(e, PollEvent))
         assert "#2: 5h 3% · 7d 89%" in poll.human()
@@ -2225,7 +2227,7 @@ class TestSessionThreshold:
         harness.engine.apply_threshold(72.0)
         assert harness.engine.settings.threshold == 72.0
         # Poll-cadence planning follows the new value immediately.
-        assert harness.switcher._poll_inputs_override == (72.0, ())
+        assert harness.switcher._poll_inputs_override == (72.0, ("all",))
         # And the very next tick decides with it: 80% ≥ 72 switches, where
         # the constructed 90 would not have.
         outcome = harness.tick_with_usage({
@@ -2584,11 +2586,29 @@ class TestModelAwareSwitch:
         switch = next(e for e in h.events if isinstance(e, SwitchEvent))
         assert switch.to_ref == {"number": 2, "email": "b@example.com"}
 
-    def test_without_model_setting_the_same_usage_holds(self, temp_home):
-        # Default engine ignores scoped windows → #1 reads 5% used, no switch.
-        # Pinned to `best`: this is about the MODEL axis being absent, and a
-        # deadline strategy would report its own (correct) reason instead.
-        h = self._seed(temp_home, strategy="best")
+    def test_the_default_gates_on_a_models_weekly_limit(self, temp_home):
+        """Unset means "all", so a maxed model window moves the fleet.
+
+        The old default ignored scoped windows, and the failure was not
+        theoretical: an account showing Fable 100% next to 7d 95% was ranked
+        the MOST urgent thing to keep burning, because the engine read the 7d
+        headroom the model no longer had. The work could not run there at all.
+        """
+        h = self._seed(temp_home)  # no model= at all
+        outcome = h.tick_with_usage({
+            "1": _model_usage(5, 100),
+            "2": _model_usage(5, 30),
+            "3": _model_usage(5, 60),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() != 1
+
+    def test_none_opts_out_of_the_model_axis(self, temp_home):
+        # With the axis switched off, #1 reads 5% used and there is no reason
+        # to move. Pinned to `best`: this is about the MODEL axis being
+        # absent, and a deadline strategy would report its own (correct)
+        # reason instead.
+        h = self._seed(temp_home, strategy="best", model="none")
         outcome = h.tick_with_usage({
             "1": _model_usage(5, 100),
             "2": _model_usage(5, 30),

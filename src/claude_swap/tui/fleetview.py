@@ -876,6 +876,35 @@ class FleetScreen(Screen):
                         return window["name"]
         return None
 
+    def _runway_text(self, label: str, row: list[fleet.FleetSegment]) -> str:
+        """``≈41h`` — how long this window's fuel lasts at the current burn.
+
+        Time is the one unit that needs no conversion: percent is a fraction
+        of pools that differ per window and per plan, and nobody budgets in
+        tokens. Empty when nothing is measured — an idle machine has no burn
+        to project, and a blank says that better than a made-up horizon.
+        """
+        if self._tracker is None:
+            return ""
+        seconds = fleet.runway_s(
+            row, lambda number: self._tracker.estimate(number, label).pct_per_s
+        )
+        if seconds is None or seconds <= 0:
+            return ""
+        hours = seconds / 3600.0
+        # Beyond a month the number stops informing anything — every window
+        # here resets within a week, so the fuel outlives its own deadline
+        # and the waste line is the one that speaks to that.
+        if hours > 720:
+            return "≈30d+"
+        # Hours up to two days: "1d" for anything between 24h and 36h is too
+        # coarse for the number people actually plan a session around.
+        if hours >= 48:
+            return f"≈{hours / 24.0:.0f}d"
+        if hours >= 1:
+            return f"≈{hours:.0f}h"
+        return f"≈{max(1, round(hours * 60)):.0f}m"
+
     def _account_weights(self, row: list[fleet.FleetSegment]) -> list[float]:
         """Relative plan size per account, so the bars compare like with like.
 
@@ -959,6 +988,16 @@ class FleetScreen(Screen):
             seg.number: rank
             for rank, seg in enumerate(reversed(self._deadline_rank(segments)))
         }
+        # HOW LONG THE TANK LASTS at the current burn, per row. Computed for
+        # every row before any is drawn so the column has one width and the
+        # three gauges keep a shared left edge — the spectrum only reads as
+        # one instrument when the bars start together.
+        runway_text = {
+            label: self._runway_text(label, row) for label, row in rows
+        }
+        runway_width = max(
+            (len(value) for value in runway_text.values() if value), default=0
+        )
         for index, (label, row) in enumerate(rows):
             row = sorted(row, key=lambda s: order.get(s.number, 0))
             colours = [colour_of.get(seg.number, palette.muted) for seg in row]
@@ -969,8 +1008,11 @@ class FleetScreen(Screen):
             # fleet holds more than one account's worth of this window.
             head = (
                 f"  {label + ':':<{label_width + 1}} "
-                f"{fleet.remaining_tank_pct(row, weights):>4.0f}%  "
+                f"{fleet.remaining_tank_pct(row, weights):>4.0f}%"
             )
+            if runway_width:
+                head += f" {runway_text[label]:<{runway_width}}"
+            head += "  "
             # Marker columns come from the string that was actually drawn,
             # never from a hand-added width. Adding this column to a
             # hand-computed gutter would have slid every ▼ and ▲ off the

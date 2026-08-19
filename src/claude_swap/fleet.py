@@ -371,6 +371,47 @@ def handover_eta_h(
     return when
 
 
+def runway_s(
+    segments: Sequence[FleetSegment],
+    rate_of,
+) -> float | None:
+    """Seconds this window's fleet-wide fuel lasts at the current burn.
+
+    TIME IS THE UNIT THAT NEEDS NO CONVERSION. Percent answers "how much of a
+    pool", and the pools differ per window and per plan; tokens answer "how
+    much work", which nobody budgets in. "How long can I keep working" is the
+    question actually being asked, and it is comparable across every row.
+
+    The work belongs to the MACHINE, not to an account — switching accounts
+    does not change what is running. So the fleet's runway is the time to burn
+    each account's share in turn: sum of ``headroom_i / rate_i``, where
+    ``rate_i`` is what this machine's current traffic costs per second in
+    account *i*'s own window (each plan prices the same tokens differently).
+
+    ``rate_of(number)`` returns that account's %/s for this window, or None.
+    Accounts with no measured rate borrow the MEDIAN of the measured ones —
+    the same equal-plan default the gauge widths already use; a fleet where
+    nothing is measured returns None rather than a guess. Blocked segments
+    still count: their quota is spendable within the window's own life, just
+    not this instant.
+    """
+    rates: dict[str, float] = {}
+    for segment in segments:
+        rate = rate_of(segment.number)
+        if rate is not None and rate > 0:
+            rates[segment.number] = rate
+    if not rates:
+        return None
+    known = sorted(rates.values())
+    default = known[len(known) // 2]
+    total = 0.0
+    for segment in segments:
+        if segment.headroom_pct <= 0:
+            continue
+        total += segment.headroom_pct / rates.get(segment.number, default)
+    return total
+
+
 def total_at_risk(segments: Sequence[FleetSegment], now: float, horizon_s: float) -> float:
     """Weekly points across the fleet that expire within ``horizon_s``.
 

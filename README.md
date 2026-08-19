@@ -79,11 +79,11 @@ toggle that reset what you were looking at would make that impossible.
 
 ```
 All fuel    47 pts expire within 24h    AUTO    switch at 99.7%
-                           ▼ dev5 8/19 Wed 13:59 (4h)
-  5h:     208%  ━━━━━━━━━━━╸━━━━━━━━━━━╸╸ ───────────  1 0% · 2 0% · 3 92% 3h
-  7d:      47%  ━━━╸╸╸ ──────── ─────────── ──────────  1 64% 5d · 2 93% 4d · 3 96% 4h
-  Fable:   45%  ━━╸━━╸ ───────── ───────── ───────────  1 77% 5d · 2 78% 4d · 3 100% 4h
-                           ▲ dev5 8/19 Wed 13:59 (4h) active
+                                 ▼ dev5 8/19 Wed 13:59 (4h)
+  5h:     208% ≈6h   ━━━━━━━━━━━╸━━━━━━━━━━━╸╸ ────────  1 0% · 2 0% · 3 92% 3h
+  7d:      47% ≈16h  ━━━╸╸╸ ──────── ─────────── ──────  1 64% 5d · 2 93% 4d · 3 96% 4h
+  Fable:   45% ≈11h  ━━╸━━╸ ───────── ───────── ───────  1 77% 5d · 2 78% 4d · 3 100% 4h
+                                 ▲ dev5 8/19 Wed 13:59 (4h) active
 ```
 
 One bar per window — session (5h), weekly (7d), and your per-model weekly
@@ -97,6 +97,14 @@ how much fuel is left and the boundaries inside it are who holds it.
   about a fleet of one and a fleet of six. It is weighted by plan size using
   the same weights the bar is drawn with, so the figure and the length of the
   coloured run can never state different amounts.
+- **`≈6h` is how long that fuel lasts at the current burn.** Time is the one
+  unit that needs no conversion — percent is a fraction of pools that differ
+  per window and per plan, and nobody budgets in tokens; "how long can I keep
+  working" is the question actually being asked. The work belongs to the
+  machine, not to an account, so the runway is the time to burn each account's
+  share in turn at that account's own rate; an account with no measured rate
+  borrows the fleet's median, and an idle machine shows nothing rather than a
+  fabricated horizon.
 - **Colour is an account's identity**, ranked once by **how far its weekly
   reset is from now** — furthest is green, soonest is red — and reused on all
   three bars. The bars are ordered on that same ranking (it is literally the
@@ -416,7 +424,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2313 tests
+uv run pytest -q                       # 2321 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

@@ -12,6 +12,7 @@ from claude_swap.fleet import (
     handover_eta_h,
     order_segments,
     remaining_tank_pct,
+    runway_s,
     segment_for,
     segment_widths,
     total_at_risk,
@@ -367,3 +368,46 @@ class TestHandoverEta:
             _seg("1", 20.0, hours=None, active=True),
             _seg("2", 30.0, hours=5.0), NOW, **self.GATE
         ) is None
+
+
+class TestRunway:
+    """How long a window's fleet-wide fuel lasts at the current burn."""
+
+    def test_runway_is_the_sum_of_each_accounts_turn(self):
+        """The work belongs to the machine: switching accounts does not change
+        what is running, so the fleet's time is spent burning each share in
+        turn at that account's own rate."""
+        segs = [_seg("1", 50.0), _seg("2", 30.0)]
+        rates = {"1": 0.010, "2": 0.010}
+        assert runway_s(segs, rates.get) == pytest.approx((50 + 30) / 0.010)
+
+    def test_each_share_is_priced_in_its_own_plan(self):
+        """A 20x plan's percent is a different amount of work from a 5x
+        plan's, and the same machine traffic therefore drains them at
+        different %/s. The runway must respect each account's own rate."""
+        segs = [_seg("1", 50.0), _seg("2", 50.0)]
+        rates = {"1": 0.010, "2": 0.002}  # account 2's window is 5x larger
+        assert runway_s(segs, rates.get) == pytest.approx(
+            50 / 0.010 + 50 / 0.002
+        )
+
+    def test_an_unmeasured_account_borrows_the_median_rate(self):
+        """The equal-plan default the gauge widths already use — a fleet is
+        not blinded by its newest account."""
+        segs = [_seg("1", 10.0), _seg("2", 10.0), _seg("3", 10.0)]
+        rates = {"1": 0.010, "3": 0.030}
+        # median of {0.010, 0.030} with two entries is the upper one here
+        expected = 10 / 0.010 + 10 / 0.030 + 10 / 0.030
+        assert runway_s(segs, rates.get) == pytest.approx(expected)
+
+    def test_a_wholly_unmeasured_fleet_says_nothing(self):
+        """None, not a guess: with no rate at all there is no burn to
+        project, and a fabricated horizon reads as a measurement."""
+        assert runway_s([_seg("1", 50.0)], lambda n: None) is None
+
+    def test_idle_is_not_a_rate(self):
+        assert runway_s([_seg("1", 50.0)], lambda n: 0.0) is None
+
+    def test_exhausted_shares_add_nothing(self):
+        segs = [_seg("1", 0.0), _seg("2", 40.0)]
+        assert runway_s(segs, {"2": 0.010}.get) == pytest.approx(40 / 0.010)

@@ -2626,6 +2626,53 @@ class TestTheTankReading:
         # 7d: (100-64) + (100-93) + (100-96);  Fable: 23 + 22 + 0
         assert found == {"5h": 208, "7d": 47, "Fable": 45}, found
 
+    async def test_each_bar_states_how_long_its_fuel_lasts(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Time is the unit that needs no conversion. Percent is a fraction of
+        pools that differ per window and per plan; "how long can I keep
+        working" is the question actually being asked."""
+        import re
+        from unittest.mock import patch as _patch
+
+        from claude_swap.burn import BurnEstimate
+        from claude_swap.tui.app import CswapApp
+        from textual.widgets import Static
+
+        app = CswapApp(self._fleet(tmp_path), start="fleet")
+        rates = {"5h": 0.010, "7d": 0.0008, "Fable": 0.0011}
+        async with app.run_test(size=(150, 46)) as pilot:
+            await settle(pilot)
+            with _patch.object(
+                app.screen._tracker, "estimate",
+                side_effect=lambda acct, window=None, **kw: BurnEstimate(
+                    pct_per_s=rates.get(window), tokens_per_s=3000.0,
+                    calibrated=True,
+                ),
+            ):
+                app.screen._display_tick()
+                rendered = app.screen.query_one("#fleet-bars", Static).render()
+            lines = (
+                rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            ).split("\n")
+        found = {}
+        for line in lines:
+            match = re.match(r"\s+(\S+):\s+\d+% (≈\S+)\s+[━╸╌─]", line)
+            if match:
+                found[match.group(1)] = match.group(2)
+        # 5h: (100-0)+(100-0)+(100-92)=208% / 0.010%/s = 5.8h;
+        # 7d: 47% / 0.0008 = 16h;  Fable: 45% / 0.0011 = 11h.
+        assert found == {"5h": "≈6h", "7d": "≈16h", "Fable": "≈11h"}, found
+
+    async def test_an_idle_machine_shows_no_runway(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A blank says "nothing measured" better than a fabricated horizon —
+        an idle machine has no burn to project."""
+        lines = await self._bars(tmp_path)
+        for line in lines:
+            assert "≈" not in line, line
+
     async def test_the_markers_still_point_into_the_gauge(
         self, tmp_path, fake_fleet_engine
     ):

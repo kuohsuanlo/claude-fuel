@@ -2352,6 +2352,32 @@ class TestGaugesShowOnlyWhatTheEngineReads:
         async with app.run_test(size=(140, 46)) as pilot:
             assert "Fable" in await self._bars(pilot, app)
 
+    async def test_an_idle_model_keeps_its_row_and_says_so(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Deleting the bar was worse than the problem it solved.
+
+        A window that is merely not running still holds quota that still
+        expires; a row that disappears reads as the tool having lost a limit.
+        Reported live: "為啥我界面的fable5不見了".
+        """
+        from unittest.mock import patch as _patch
+
+        from claude_swap.tui.app import CswapApp
+
+        app = CswapApp(self._fleet(tmp_path, "all"), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            # Nothing has spent Fable, and nothing selects it either.
+            with _patch(
+                "claude_swap.tui.fleetview.FleetScreen._models", return_value=()
+            ):
+                app.screen._display_tick()
+                bars = await self._bars(pilot, app)
+        assert "Fable" in bars, "the row must survive not being the binding limit"
+        line = next(l for l in bars.split("\n") if "Fable" in l)
+        assert "not running" in line, line
+
     async def test_the_model_row_vanishes_when_the_engine_ignores_it(
         self, tmp_path, fake_fleet_engine
     ):

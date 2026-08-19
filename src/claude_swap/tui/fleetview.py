@@ -286,6 +286,28 @@ class FleetScreen(Screen):
         except Exception:
             pass
 
+    def _row_gates(self, label: str) -> bool:
+        """Is this window one the engine would actually stop on right now?"""
+        from claude_swap.burn import ACCOUNT_WIDE_WINDOWS
+
+        if label in ACCOUNT_WIDE_WINDOWS:
+            return True
+        gating = self._models()
+        return "all" in {name.lower() for name in gating} or label in gating
+
+    def _declared_models(self) -> tuple[str, ...]:
+        """What ``autoswitch.model`` asks to care about, before measurement.
+
+        Kept apart from :meth:`_models` because the bars need both. A window
+        the user opted OUT of should not be drawn at all; one that merely is
+        not running this minute still holds quota that still expires, and
+        deleting its bar reads as the tool losing a limit rather than as the
+        limit not applying.
+        """
+        from claude_swap.settings import parse_model_names
+
+        return parse_model_names(self._settings.model if self._settings else None)
+
     def _models(self) -> tuple[str, ...]:
         """The per-model windows that GATE right now — the engine's own set.
 
@@ -294,9 +316,8 @@ class FleetScreen(Screen):
         showing fuel nothing will ever act on.
         """
         from claude_swap.burn import ACCOUNT_WIDE_WINDOWS, burning_models
-        from claude_swap.settings import parse_model_names
 
-        declared = parse_model_names(self._settings.model if self._settings else None)
+        declared = self._declared_models()
         snapshot = self.app.snapshot
         if (
             not declared
@@ -805,12 +826,10 @@ class FleetScreen(Screen):
             fleet.window_segment(
                 number=account.number, email=account.email, alias=account.alias,
                 usage=account.usage.last_good, label=label,
-                # The ENGINE's model list, never a hardcoded "all". A gauge
-                # drawn from a wider list than the decision reads is a gauge
-                # showing fuel nothing will ever act on: the Fable row sat at
-                # 100% while the engine, configured with no models, ranked
-                # that account the most urgent one to keep burning.
-                models=self._models(),
+                # The DECLARED set: a row exists for every window the user
+                # asked to care about. WHETHER IT GATES is a separate fact,
+                # drawn as a label rather than by deleting the row.
+                models=self._declared_models(),
                 now=now, is_active=account.is_active,
             )
             for account in snapshot.accounts
@@ -959,6 +978,11 @@ class FleetScreen(Screen):
                 countdown = segment.countdown_text(now)
                 if countdown:
                     text.append(f" {countdown}", style=palette.muted)
+            if not self._row_gates(label):
+                # The quota is real and still expires; it just is not what
+                # will stop you right now. Saying so beats removing the bar,
+                # which reads as the limit having disappeared.
+                text.append("  not running", style=palette.track)
             # ▲ BELOW: where quota is being drawn from right now. Two markers
             # rather than one because "what dies first" and "what I am
             # spending" are different questions, and the whole point of the

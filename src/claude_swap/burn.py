@@ -125,12 +125,48 @@ def window_model_filter(window: str | None) -> str | None:
     return window
 
 
+def configured_models(config_home=None) -> tuple[str, ...]:
+    """Models Claude Code is CONFIGURED to use, from its own settings files.
+
+    KNOWN BEFORE THE FIRST REQUEST, which observation can never be: a
+    transcript line is written after a response, so a model's first use is
+    always discovered by having already spent it. If that first request lands
+    on an account whose limit for that model is gone, it fails — and no amount
+    of polling can undo a request that already happened.
+
+    The selected model is persisted (``settings.json``'s ``model``), so a
+    ``/model`` switch is visible the moment it is made. Suffixes like
+    ``[1m]`` are context-window variants of the same model and are stripped.
+
+    Never raises: an unreadable or absent settings file simply contributes
+    nothing, leaving the measured mix to speak on its own.
+    """
+    from claude_swap import paths
+
+    home = config_home if config_home is not None else paths.get_claude_config_home()
+    found: list[str] = []
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            raw = json.loads((home / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        value = raw.get("model")
+        if isinstance(value, str) and value.strip():
+            model = value.split("[", 1)[0].strip()
+            if model and model not in found:
+                found.append(model)
+    return tuple(found)
+
+
 def burning_models(
     sensor,
     declared: Sequence[str],
     reported: Sequence[str],
     *,
     window_s: float = DEFAULT_WINDOW_S,
+    configured: Sequence[str] | None = None,
 ) -> tuple[str, ...] | None:
     """Which per-model windows should gate a switch: the ones being SPENT.
 
@@ -167,8 +203,17 @@ def burning_models(
         return None
     if sensor.tokens_per_s(window_s) <= 0:
         return tuple(names)  # nothing ran: no evidence either way
+    # THE UNION OF CHOSEN AND OBSERVED. A model that is merely SELECTED has
+    # spent nothing yet, and waiting for it to spend something means the first
+    # request of the session is the one that discovers the limit is gone. A
+    # model that is RUNNING gates whatever the setting says, which is what
+    # covers a session started with its own --model override.
+    chosen = configured if configured is not None else configured_models()
     return tuple(
-        name for name in names if sensor.tokens_per_s(window_s, name) > 0
+        name
+        for name in names
+        if sensor.tokens_per_s(window_s, name) > 0
+        or any(model_matches(name, model) for model in chosen)
     )
 
 

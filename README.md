@@ -325,6 +325,20 @@ are running nothing" look identical in the token stream and mean opposite
 things; the first is a measurement, the second is the absence of one. With no
 traffic at all, every declared window keeps gating.
 
+**Selected counts, not just spent.** Observation alone is always one request
+late: a transcript line is written *after* a response, so a model's first use
+can only be discovered by having already spent it — and if that first request
+lands on an account whose limit for that model is gone, it fails. Claude Code
+persists the chosen model in its own `settings.json`, so `cfuel` reads it and
+gates on a model the moment it is **selected**, before anything is spent. A
+model that is *running* gates whatever the setting says, which covers a
+session started with its own `--model`. Either is enough; the two are unioned.
+
+**A window that is not gating keeps its bar**, marked `not running`. It still
+holds quota and that quota still expires — it simply is not what will stop you
+right now. Deleting the row said something much stronger, and read as the tool
+having lost a limit.
+
 ```bash
 cfuel config set autoswitch.measuredModelMix false   # always gate on the declared list
 ```
@@ -393,7 +407,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2300 tests
+uv run pytest -q                       # 2310 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

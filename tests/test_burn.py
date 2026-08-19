@@ -615,3 +615,89 @@ class TestPerModelWindows:
         other = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
         other.restore_calibration(tracker.calibration_state())
         assert other.pct_per_token("1", "Fable") is not None
+
+
+class TestConfiguredModels:
+    """What Claude Code is SET to use, known before it is used."""
+
+    def test_it_reads_the_selected_model(self, tmp_path: Path):
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"model": "claude-fable-5[1m]"}), encoding="utf-8"
+        )
+        assert burn.configured_models(tmp_path) == ("claude-fable-5",)
+
+    def test_the_context_variant_suffix_is_not_part_of_the_model(
+        self, tmp_path: Path
+    ):
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"model": "claude-opus-5[1m]"}), encoding="utf-8"
+        )
+        assert burn.configured_models(tmp_path) == ("claude-opus-5",)
+
+    def test_local_settings_are_read_too(self, tmp_path: Path):
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"model": "claude-opus-5"}), encoding="utf-8"
+        )
+        (tmp_path / "settings.local.json").write_text(
+            json.dumps({"model": "claude-fable-5"}), encoding="utf-8"
+        )
+        assert set(burn.configured_models(tmp_path)) == {
+            "claude-opus-5", "claude-fable-5"
+        }
+
+    def test_missing_or_corrupt_settings_say_nothing(self, tmp_path: Path):
+        assert burn.configured_models(tmp_path) == ()
+        (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
+        assert burn.configured_models(tmp_path) == ()
+
+    def test_no_model_key_says_nothing(self, tmp_path: Path):
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"theme": "dark"}), encoding="utf-8"
+        )
+        assert burn.configured_models(tmp_path) == ()
+
+
+class TestChosenAndObservedAreUnioned:
+    """A model gates if it is SELECTED or RUNNING — either is enough."""
+
+    class _Sensor:
+        def __init__(self, **rates):
+            self._rates = {(None if k == "total" else k): v for k, v in rates.items()}
+
+        def tokens_per_s(self, window_s=60.0, model_filter=None):
+            return self._rates.get(model_filter, 0.0)
+
+    def test_a_selected_model_gates_before_it_has_spent_anything(self):
+        """The whole reason to read the setting. A transcript line is written
+        AFTER a response, so waiting for evidence means the first request of
+        the session is the one that discovers the limit is gone."""
+        sensor = self._Sensor(total=500.0, Opus=500.0)
+        gating = burn.burning_models(
+            sensor, ("all",), ["Fable", "Opus"],
+            configured=("claude-fable-5",),
+        )
+        assert set(gating) == {"Fable", "Opus"}
+
+    def test_a_running_model_gates_whatever_the_setting_says(self):
+        """Covers a session started with its own --model override, which
+        never reaches the settings file."""
+        sensor = self._Sensor(total=500.0, Opus=500.0)
+        gating = burn.burning_models(
+            sensor, ("all",), ["Fable", "Opus"],
+            configured=("claude-fable-5",),
+        )
+        assert "Opus" in gating
+
+    def test_neither_selected_nor_running_stops_gating(self):
+        sensor = self._Sensor(total=500.0, Opus=500.0)
+        gating = burn.burning_models(
+            sensor, ("all",), ["Fable", "Opus"],
+            configured=("claude-opus-5",),
+        )
+        assert gating == ("Opus",)
+
+    def test_an_idle_machine_still_relaxes_nothing(self):
+        gating = burn.burning_models(
+            self._Sensor(), ("all",), ["Fable", "Opus"], configured=(),
+        )
+        assert set(gating) == {"Fable", "Opus"}

@@ -79,7 +79,7 @@ class TestCLI:
         assert result.returncode == 0
         assert "Multi-Account Switcher" in result.stdout
         # Bare subcommands are the documented interface and lead the help.
-        assert "cswap add" in result.stdout or "add " in result.stdout
+        assert "cfuel add" in result.stdout or "add " in result.stdout
         assert "switch <num|email>" in result.stdout
         assert "list " in result.stdout
         assert "status " in result.stdout
@@ -569,7 +569,7 @@ class TestCLICommands:
 
 
 class TestRunCommand:
-    """`cswap run` pre-dispatch: parsing, forwarding, and dispatch."""
+    """`cfuel run` pre-dispatch: parsing, forwarding, and dispatch."""
 
     def _dispatch(self, argv: list[str]):
         """Run cli.main() with a fake SessionManager; returns recorded calls."""
@@ -673,7 +673,7 @@ class TestRunCommand:
 
 
 class TestSubcommandAliases:
-    """Memorable subcommands (`cswap switch`, `cswap list`, ...) → classic flags."""
+    """Memorable subcommands (`cfuel switch`, `cfuel list`, ...) → classic flags."""
 
     def test_translate_is_noop_for_flags(self):
         """argv that already uses --flags is passed through untouched."""
@@ -716,7 +716,7 @@ class TestSubcommandAliases:
         assert cli._translate_subcommand(["bogus"]) == ["bogus"]
 
     def test_switch_subcommand_dispatches_switch_to(self):
-        """`cswap switch 2` reaches switch_to("2")."""
+        """`cfuel switch 2` reaches switch_to("2")."""
         with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", ["claude-swap", "switch", "2"]), \
              patch("os.geteuid", return_value=1000, create=True), \
@@ -727,7 +727,7 @@ class TestSubcommandAliases:
         )
 
     def test_bare_switch_subcommand_dispatches_switch(self):
-        """`cswap switch` reaches switch() (rotate)."""
+        """`cfuel switch` reaches switch() (rotate)."""
         with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", ["claude-swap", "switch"]), \
              patch("os.geteuid", return_value=1000, create=True), \
@@ -738,7 +738,7 @@ class TestSubcommandAliases:
         )
 
     def test_list_subcommand_with_json(self):
-        """`cswap list --json` reaches list_accounts(json_output=True)."""
+        """`cfuel list --json` reaches list_accounts(json_output=True)."""
         payload = {"schemaVersion": 1, "accounts": []}
         with patch("claude_swap.cli.ClaudeAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", ["claude-swap", "list", "--json"]), \
@@ -751,7 +751,7 @@ class TestSubcommandAliases:
         )
 
     def test_run_subcommand_still_dispatches(self):
-        """`cswap run 2` keeps reaching the session pre-dispatch (not translated)."""
+        """`cfuel run 2` keeps reaching the session pre-dispatch (not translated)."""
         calls = []
 
         class FakeSessionManager:
@@ -867,7 +867,7 @@ class TestJsonOutputCli:
 
 
 class TestAutoCommand:
-    """`cswap auto` pre-dispatch: parsing, settings merge, exit codes, JSONL."""
+    """`cfuel auto` pre-dispatch: parsing, settings merge, exit codes, JSONL."""
 
     class FakeEngine:
         instances: list = []
@@ -1053,7 +1053,7 @@ class TestUnclaimedCommand:
 
 
 class TestMapCommand:
-    """`cswap map` / `cswap unmap` directory-mapping commands."""
+    """`cfuel map` / `cswap unmap` directory-mapping commands."""
 
     def _seeded_switcher_env(self, temp_home):
         """Build a real switcher with one managed account (slot 2)."""
@@ -1176,7 +1176,7 @@ class TestMapCommand:
         assert "No mapping for" in capsys.readouterr().out
 
     def test_map_dispatched_from_main(self, temp_home):
-        """`cswap map` routes through main() to _map_command."""
+        """`cfuel map` routes through main() to _map_command."""
         with patch("claude_swap.cli._map_command") as map_fn, \
              patch.object(sys, "argv", ["claude-swap", "map", "2", "/tmp/x"]):
             cli.main()
@@ -1210,7 +1210,7 @@ class TestMapCommand:
 
 
 class TestAliasCommand:
-    """`cswap alias` — set/unset/list a short display alias for an account."""
+    """`cfuel alias` — set/unset/list a short display alias for an account."""
 
     def _seeded_switcher_env(self, temp_home):
         switcher = ClaudeAccountSwitcher()
@@ -1276,7 +1276,7 @@ class TestAliasCommand:
                 cli._alias_command(["2"])
 
     def test_unset_without_account_errors(self, temp_home, capsys):
-        """`cswap alias --unset` with no target must error, not silently list."""
+        """`cfuel alias --unset` with no target must error, not silently list."""
         self._seeded_switcher_env(temp_home)
         with patch("os.geteuid", return_value=1000, create=True):
             with pytest.raises(SystemExit):
@@ -1341,7 +1341,7 @@ class TestAliasCommand:
 
 
 class TestRunAutoResolve:
-    """`cswap run` with no account resolves the cwd's directory mapping."""
+    """`cfuel run` with no account resolves the cwd's directory mapping."""
 
     def _fake_manager(self, calls):
         class FakeSessionManager:
@@ -1549,3 +1549,46 @@ class TestDisableEnableDispatch:
             with pytest.raises(SystemExit) as excinfo:
                 cli.main()
         assert excinfo.value.code == 2
+
+
+class TestOneCommandOnly:
+    """Exactly one console script, so cfuel and cswap can coexist."""
+
+    @staticmethod
+    def _scripts() -> dict:
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        with (root / "pyproject.toml").open("rb") as handle:
+            return tomllib.load(handle)["project"]["scripts"]
+
+    def test_the_package_ships_only_cfuel(self):
+        """Claiming `cswap` or `claude-swap` too would collide with upstream
+        claude-swap's own scripts, and whichever was installed last would
+        silently win — so the two could not be installed side by side."""
+        assert set(self._scripts()) == {"cfuel"}
+
+    def test_cfuel_is_the_fleet_entry_point(self):
+        assert self._scripts()["cfuel"] == "claude_swap.cli:fleet_main"
+
+    def test_a_bare_invocation_opens_the_view(self):
+        """No arguments is the fleet view — one word, one answer."""
+        with patch.object(sys, "argv", ["cfuel"]), \
+             patch("claude_swap.cli.main") as delegated, \
+             patch("claude_swap.cli.force_utf8_output"), \
+             patch("claude_swap.cli._use_native_tls"), \
+             patch.object(sys.stdout, "isatty", return_value=False), \
+             patch.object(sys.stdin, "isatty", return_value=False):
+            with pytest.raises(SystemExit):
+                cli.fleet_main()
+        delegated.assert_not_called()
+
+    def test_arguments_fall_through_to_the_full_cli(self):
+        """`cfuel add`, `cfuel list`, `cfuel config ...` — everything upstream
+        can do has to be reachable, because this is the only command shipped."""
+        for argv in (["cfuel", "add"], ["cfuel", "list"], ["cfuel", "--help"]):
+            with patch.object(sys, "argv", argv), \
+                 patch("claude_swap.cli.main") as delegated:
+                cli.fleet_main()
+            delegated.assert_called_once_with()

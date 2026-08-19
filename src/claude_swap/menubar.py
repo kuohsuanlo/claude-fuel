@@ -4,7 +4,7 @@ A thin GUI shell over ``ClaudeAccountSwitcher`` and the core auto-switch engine
 (``claude_swap.autoswitch``) — it never re-implements account, usage, or
 auto-switch logic. Usage for display comes from ``switcher.accounts_snapshot()``
 (backed by the shared usage store); auto-switching, when enabled, runs the same
-``AutoSwitchEngine`` the CLI's ``cswap auto`` drives, sharing
+``AutoSwitchEngine`` the CLI's ``cfuel auto`` drives, sharing
 ``autoswitch_state.json`` and the ``autoswitch.*`` settings. The menu bar keeps
 only its own display preferences.
 
@@ -487,7 +487,7 @@ def run(switcher) -> int:
             self._config_path = switcher._get_claude_config_path()
             self._config_mtime = 0.0
             self._last_usage_log: dict = {}  # account num -> last-logged (5h, 7d) key
-            # Auto-switch engine (the same one `cswap auto` runs), hosted in a
+            # Auto-switch engine (the same one `cfuel auto` runs), hosted in a
             # background thread while enabled.
             self._engine = None
             self._engine_events: list = []

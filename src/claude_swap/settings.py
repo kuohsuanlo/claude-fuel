@@ -31,7 +31,7 @@ _logger = logging.getLogger("claude-swap")
 
 @dataclass(frozen=True)
 class AutoSwitchSettings:
-    """Policy knobs for the auto-switch engine (``cswap auto``).
+    """Policy knobs for the auto-switch engine (``cfuel auto``).
 
     ``threshold`` is binding-window utilization (max of the 5h/7d percentages):
     at or above it the engine looks for a better account. 90 rather than 95
@@ -103,7 +103,7 @@ class SettingSpec:
     """Metadata for one user-tunable settings.json key.
 
     Single source of truth for bounds/choices: both the lenient clamp on load
-    (`_clamped`) and the strict validation in `cswap config set`
+    (`_clamped`) and the strict validation in `cfuel config set`
     (`parse_setting_value`) read from here, so the two can't drift.
     """
 
@@ -136,7 +136,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "autoswitch", "intervalSeconds", "interval_seconds", "float", 15.0, 3600.0,
-            help="Poll interval for the cswap auto loop, in seconds",
+            help="Poll interval for the cfuel auto loop, in seconds",
         ),
         SettingSpec(
             "autoswitch", "cooldownSeconds", "cooldown_seconds", "float", 0.0, 86400.0,
@@ -347,11 +347,11 @@ _BOOL_WORDS = {
 
 
 def parse_setting_value(spec: SettingSpec, raw_value: str):
-    """Strictly parse a CLI-provided string for `cswap config set`.
+    """Strictly parse a CLI-provided string for `cfuel config set`.
 
     Unlike the forgiving clamp on load, out-of-range or mistyped values raise
     ConfigError so the user learns about the problem when setting the value,
-    not by silently degraded behavior at `cswap auto` time.
+    not by silently degraded behavior at `cfuel auto` time.
     """
     if spec.kind == "bool":
         # Never bool(str): bool("false") is True.
@@ -373,7 +373,7 @@ def parse_setting_value(spec: SettingSpec, raw_value: str):
         if not value:
             raise ConfigError(
                 f"{spec.dotted} expects a non-empty value; use "
-                f"'cswap config unset {spec.dotted}' to clear it"
+                f"'cfuel config unset {spec.dotted}' to clear it"
             )
         return value
     try:
@@ -431,7 +431,7 @@ def _read_raw_for_write(path: Path) -> dict:
 
 
 def set_setting(backup_root: Path, dotted_key: str, raw_value: str):
-    """Validate and persist one key for `cswap config set`; returns the value.
+    """Validate and persist one key for `cfuel config set`; returns the value.
 
     Writes only the given key (plus schemaVersion) — deliberately not
     ``save_settings``, which writes every known key and would freeze the
@@ -472,7 +472,7 @@ def effective_settings(backup_root: Path) -> list[tuple[SettingSpec, object, boo
     """(spec, effective value, explicitly set?) per key, in registry order.
 
     "Set" means the key is present in the raw file — an explicit value equal
-    to the default still counts — so `cswap config`'s "(default)" marker
+    to the default still counts — so `cfuel config`'s "(default)" marker
     reflects the file, not value equality.
     """
     raw = _read_raw(settings_path(backup_root))

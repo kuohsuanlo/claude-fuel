@@ -435,7 +435,7 @@ class FleetScreen(Screen):
         """Set the threshold everywhere it is read, and write it to disk.
 
         PERSISTED ON PURPOSE. The engine outlives this screen — it runs from
-        settings.json in `cswap auto` and on the next launch — so a threshold
+        settings.json in `cfuel auto` and on the next launch — so a threshold
         that reverted on exit would leave the user protected by a number they
         had already rejected.
         """
@@ -1225,7 +1225,7 @@ class FleetScreen(Screen):
     def _render_accounts(
         self, segments: list[fleet.FleetSegment], now: float, palette: Palette
     ) -> None:
-        """The account list, in `cswap list`'s own format.
+        """The account list, in `cfuel list`'s own format.
 
         Deliberately not a new layout: this block answers "tell me everything
         about account 2", and a reader who already knows that shape from the
@@ -1242,7 +1242,7 @@ class FleetScreen(Screen):
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append("Accounts:", style=f"bold {palette.foreground}")
         for index, account in enumerate(snapshot.accounts):
-            # Blank line between accounts, exactly as `cswap list` prints it:
+            # Blank line between accounts, exactly as `cfuel list` prints it:
             # three windows per account run together into an unreadable block
             # without it.
             text.append("\n\n" if index else "\n")
@@ -1289,7 +1289,7 @@ class FleetScreen(Screen):
 
     @staticmethod
     def _append_running_instances(text: Text, palette: Palette) -> None:
-        """Which sessions are sharing the account, grouped as `cswap list` does.
+        """Which sessions are sharing the account, grouped as `cfuel list` does.
 
         Load-bearing rather than decorative: every one of these is spending
         the SAME active account, so "switch" means switching all of them at

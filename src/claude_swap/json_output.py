@@ -28,7 +28,7 @@ USAGE_API_KEY = "api key"
 # isn't misled into an unnecessary re-login.
 USAGE_KEYCHAIN_UNAVAILABLE = "keychain unavailable"
 # The stored refresh-token lineage is dead (repeated ``invalid_grant``). The
-# account is quarantined from fetching until a re-login (``cswap login`` / ``add``)
+# account is quarantined from fetching until a re-login (``cfuel login`` / ``add``)
 # replaces the credential; distinct from "token expired" (which Claude Code can
 # refresh on its own) because only the user can fix it.
 USAGE_RELOGIN_REQUIRED = "re-login needed"

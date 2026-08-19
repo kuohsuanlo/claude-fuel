@@ -88,7 +88,7 @@ def run_action(fn: Callable[[], dict | None]) -> ActionResult:
 # ---------------------------------------------------------------------------
 
 def sentinel_label(sentinel: str) -> str:
-    """The same wording ``cswap list`` prints for this sentinel state."""
+    """The same wording ``cfuel list`` prints for this sentinel state."""
     return SENTINEL_NOTES.get(sentinel, sentinel)
 
 

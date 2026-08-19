@@ -316,7 +316,7 @@ class TestFormatting:
 
     def test_sentinel_card_shows_last_seen_like_cswap_list(self):
         # A sentinel is a live overlay — the entry can still carry the last
-        # good measurement, and `cswap list` prints it as a "last seen" line.
+        # good measurement, and `cfuel list` prints it as a "last seen" line.
         # The card must too (except for API-key accounts, which have no quota).
         from claude_swap.tui.widgets import account_card_text
 
@@ -396,7 +396,7 @@ class TestSnapshotSource:
 
     def test_every_pass_is_store_governed(self, tmp_path):
         # Pacing lives in the usage store (poll plans + freshness + atomic
-        # reservation), so every take is the same on-demand pass `cswap list`
+        # reservation), so every take is the same on-demand pass `cfuel list`
         # runs — including the user's explicit refresh, which cannot bypass
         # the store's per-account cadence.
         fake, source = self._source(tmp_path)
@@ -1905,7 +1905,7 @@ class TestFleetScreen:
         self, tmp_path, fake_fleet_engine
     ):
         """Not a new layout: this block answers "tell me everything about
-        account 2", and a reader who knows that shape from `cswap list` should
+        account 2", and a reader who knows that shape from `cfuel list` should
         not have to learn a second one."""
         app = _fleet_app(self._fleet(tmp_path))
         async with app.run_test(size=(100, 32)) as pilot:

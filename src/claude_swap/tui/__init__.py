@@ -2,7 +2,7 @@
 
 Entry point for ``cswap tui`` (and bare ``cswap`` in an interactive
 terminal). Heavy imports (textual, rich) stay inside :func:`run` so the
-plain CLI paths — ``cswap list``, cron's ``cswap auto --once`` — never pay
+plain CLI paths — ``cfuel list``, cron's ``cfuel auto --once`` — never pay
 for them.
 """
 

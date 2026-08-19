@@ -42,8 +42,10 @@ Issues = "https://github.com/kuohsuanlo/claude-fuel/issues"
 Upstream = "https://github.com/realiti4/claude-swap"
 
 [project.scripts]
-claude-swap = "claude_swap.cli:main"
-cswap = "claude_swap.cli:main"
+# ONE command, on purpose. Claiming `cswap` and `claude-swap` too would collide
+# with upstream claude-swap's own console scripts, and whichever was installed
+# last would silently win — so the two could not be installed side by side.
+# `cfuel` with a subcommand is the whole CLI; bare `cfuel` is the fleet view.
 cfuel = "claude_swap.cli:fleet_main"
 
 [build-system]

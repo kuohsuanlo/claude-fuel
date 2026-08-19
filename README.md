@@ -1,18 +1,20 @@
 # cfuel
 
-**A fuel gauge for your Claude Code accounts.** One command opens one screen
-that answers two questions: *what quota am I about to waste*, and *am I about
-to hit a wall* — and, if you let it, moves you off an account before either
-happens.
+<img src="art/beep.gif" width="260" align="right" alt="Beep mining">
+
+**A fuel gauge for your Claude Code accounts.**
+
+One command opens one screen that answers two questions: *what quota am I
+about to waste*, and *am I about to hit a wall* — and, if you let it, moves you
+off an account before either happens.
+
+Beep mines while your tokens burn, faster when you burn faster, and sleeps when
+nothing has run for ninety seconds. That last part tells you something no number
+on the screen can: whether a burn reading of zero means idle or means broken.
+
+<br clear="right">
 
 ![cfuel](art/screenshot.png)
-
-A fork of [realiti4/claude-swap](https://github.com/realiti4/claude-swap). The
-upstream tool switches accounts and reports usage; this fork adds the parts
-that answer *when* and *why* — a deadline-aware strategy, a burn rate measured
-from your own transcripts, and a screen built around both. Everything upstream
-still works: `cswap list`, `cswap switch`, `cswap auto`, session mode, the
-menu bar.
 
 ---
 
@@ -26,15 +28,27 @@ curl -LsSf https://astral.sh/uv/install.sh | sh          # if you don't have uv
 uv tool install "git+ssh://git@github.com/kuohsuanlo/claude-fuel.git"
 ```
 
-Installs three commands: **`cfuel`** (the screen), plus `cswap` and
-`claude-swap` (the upstream CLI, unchanged).
+That installs exactly one command: **`cfuel`**.
 
 > The repository is private, so HTTPS installs fail — SSH is required and the
 > machine needs a key with access. To update, re-run the same command with
 > `--force --reinstall`; `uv tool upgrade` does not re-fetch a git source.
 
-**Do not `uv tool install claude-swap`** — that name on PyPI is upstream, and
-installing it replaces this fork.
+### Installs alongside `cswap`
+
+`cfuel` deliberately claims **no** command name that upstream claude-swap uses,
+so the two can be installed at the same time and neither shadows the other:
+
+```bash
+uv tool install claude-swap                              # upstream: cswap
+uv tool install "git+ssh://git@github.com/kuohsuanlo/claude-fuel.git"   # this: cfuel
+```
+
+They **share the same accounts, credentials and `settings.json`** — the on-disk
+layout is untouched from upstream, so switching with one is visible to the
+other immediately, and a threshold set in `cfuel` is the one `cswap auto`
+reads. Which of the two you type is a matter of what is on your PATH, never of
+which data you get.
 
 ---
 
@@ -44,8 +58,8 @@ installing it replaces this fork.
 cfuel
 ```
 
-Accounts, settings and login state are shared with `cswap` — same package,
-another entry point — so there is nothing to copy across.
+Bare `cfuel` opens the fleet view. Anything after it is the account CLI —
+see [Commands](#commands).
 
 | Key | Does |
 | --- | --- |
@@ -83,20 +97,15 @@ how much fuel is left and the boundaries inside it are who holds it.
   about a fleet of one and a fleet of six. It is weighted by plan size using
   the same weights the bar is drawn with, so the figure and the length of the
   coloured run can never state different amounts.
-
 - **Colour is an account's identity**, ranked once by **how far its weekly
   reset is from now** — furthest is green, soonest is red — and reused on all
   three bars. The bars are ordered on that same ranking (it is literally the
   reversed list, not a second sort), so the spectrum always runs green on the
   left to red on the right and a colour means the same thing on every row.
-  Ranking each row by its own reset — which is what it did first — made an
-  account amber on one bar and red on the next, and the colour stopped being
-  an identity at all.
 - Colour deliberately does **not** follow the waste risk the strategy ranks by.
   Risk is headroom *divided by* that distance, so an account with 8 points left
   comes out the calmest thing on screen precisely because it has nothing to
-  lose — "nearly exhausted" and "plenty of time" painted the same green. The
-  deadline on its own is also the number already printed beside the bar.
+  lose — "nearly exhausted" and "plenty of time" painted the same green.
 - **`▼` above** names the account whose quota in *that* window expires soonest;
   it is hidden when there is nothing left to lose.
 - **`▲` below** names the account being spent right now.
@@ -117,59 +126,72 @@ burn  5h     0.023%/s  ·  1% every 43s
 
 One rate per window, because there is no such thing as "the" burn rate — the
 same tokens are a large fraction of a five-hour window and a small fraction of
-a weekly one. Both forms of the rate are shown, `%/s` and seconds-per-percent,
-because a threshold is a decision about *how much warning you get* and the
-second form states that directly.
-
-`r` adopts the suggested threshold, which is the highest one the current rate
-can survive.
+a weekly one. Both forms are shown, `%/s` and seconds-per-percent, because a
+threshold is a decision about *how much warning you get* and the second form
+states that directly. `r` adopts the suggested threshold, which is the highest
+one the current rate can survive.
 
 **The last line says when the other account gets its turn.** "Nothing is more
 urgent than this one" is a true answer to a question nobody asked; the one
 people actually ask is *then when does account 2 get used*. It is answerable
-because the risk axis carries the deadline in its denominator: a candidate
-that loses today's comparison climbs on its own until it clears the
-hysteresis gate, whether or not anything else changes. The line pairs that
-instant with whether the quota survives the wait — 7 points needing 40 minutes
-with 11.6 hours of window left is a wait that costs nothing, and the same line
-turns amber when it is not.
+because the risk axis carries the deadline in its denominator: a candidate that
+loses today's comparison climbs on its own until it clears the hysteresis gate.
+The line pairs that instant with whether the quota survives the wait — 7 points
+needing 40 minutes with 11.6 hours of window left costs nothing, and the same
+line turns amber when it is not. It says "by" rather than "at" on purpose: the
+estimate holds both accounts' headroom still, and spending the active one only
+brings the handover forward.
 
-It says "by" rather than "at" on purpose: the estimate holds both accounts'
-headroom still, and spending the active one only lowers its risk, which brings
-the handover forward.
+### The sky
 
-### Beep
-
-<img src="art/beep.gif" width="300" alt="Beep mining"> <img src="art/beep-sleeping.png" width="300" alt="Beep asleep">
-
-The pet is an instrument, not decoration. He **mines while tokens are being
-spent**, and his swing rate follows the burn rate — four discrete speeds, so
-the change is legible rather than a smooth drift nobody notices. He **sleeps,
-eyes closed, when nothing has burned for ninety seconds**, which tells you
-something no number on the screen can: whether a burn reading of zero means
-idle or means broken.
-
-He is real pixel art — extracted pixel by pixel from reference art of Kenshi's
-Beep, then rigged — not characters arranged to suggest a shape. The rigging
-rules that took the most work are the ones that stop him looking wrong:
-fixed-height bones (head, face, chest, legs) never squash, because a body that
-changes height between frames reads as a glitch rather than as motion; the
-frame rate is constant, since animation that varies its own timing looks like
-lag; he faces the rock he is hitting; and the pick swings from his arm.
-
-Above him is the real sky: sun or moon placed by your local clock along an arc,
-with the weather that is actually outside. It **costs no tokens** — nothing
-here goes near a model. The sun is arithmetic on the clock; the weather is one
-small key-less JSON request on a background thread, a few times an hour,
-cached to disk. It never blocks a repaint and never raises; with no network it
-draws a clear sky rather than presenting a default as a measurement. Sky and
-pet share one background, so it is a scene he is standing in rather than a
-cut-out pasted under a weather widget.
+Sun or moon placed by your local clock along an arc, with the weather that is
+actually outside. It **costs no tokens** — nothing here goes near a model. The
+sun is arithmetic on the clock; the weather is one small key-less JSON request
+on a background thread, a few times an hour, cached to disk. It never blocks a
+repaint and never raises; with no network it draws a clear sky rather than
+presenting a default as a measurement. Sky and pet share one background, so it
+is a scene Beep stands in rather than a cut-out pasted under a weather widget.
 
 ![Beep in three skies](art/beep.png)
 
 *Left to right: mining under a clear noon, asleep under a crescent moon, and
 mining in the rain — the same pet, three real readings.*
+
+Beep is real pixel art, extracted pixel by pixel from reference art of Kenshi's
+Beep and then rigged. The rules that took the most work are the ones that stop
+him looking wrong: fixed-height bones (head, face, chest, legs) never squash,
+because a body that changes height between frames reads as a glitch rather than
+as motion; the frame rate is constant, since animation that varies its own
+timing looks like lag; he faces the rock he is hitting; and the pick swings
+from his arm.
+
+---
+
+## Commands
+
+Everything upstream can do, under one name. `cfuel help` prints the full list.
+
+| Command | Does |
+| --- | --- |
+| `cfuel` | Open the fleet view |
+| `cfuel add` | Add the currently logged-in account |
+| `cfuel add-token [TOKEN]` | Register a setup-token or API key |
+| `cfuel list` / `ls` | List managed accounts and their usage |
+| `cfuel status` | Show the current account |
+| `cfuel switch` | Rotate to the next account |
+| `cfuel switch <num\|email>` | Switch to a specific account |
+| `cfuel remove <num\|email>` / `rm` | Remove an account |
+| `cfuel disable` / `enable <num\|email>` | Hold an account out of auto-rotation, or return it |
+| `cfuel run <num\|email> [-- ...]` | Run as an account, this terminal only |
+| `cfuel map <num\|email> [path]` | Map a directory to an account |
+| `cfuel alias <num\|email> <name>` | Give an account a short name |
+| `cfuel swap <a> <b>` / `move <a> <slot>` | Rearrange slot numbers |
+| `cfuel auto` | Headless auto-switch loop |
+| `cfuel config [set KEY VALUE]` | Show or change settings.json |
+| `cfuel export` / `import <path>` | Move accounts between machines |
+| `cfuel tui` / `watch` | The original dashboard |
+| `cfuel menubar` | macOS menu bar app |
+| `cfuel upgrade` | Self-upgrade |
 
 ---
 
@@ -193,9 +215,9 @@ hysteresis margin still gates it and the deadline only orders the candidates
 that clear it.
 
 ```bash
-cswap config set autoswitch.strategy waste-first    # the default
-cswap config set autoswitch.strategy consume-first  # soonest reset, ignoring size
-cswap config set autoswitch.strategy best           # upstream: most left, no deadlines
+cfuel config set autoswitch.strategy waste-first    # the default
+cfuel config set autoswitch.strategy consume-first  # soonest reset, ignoring size
+cfuel config set autoswitch.strategy best           # upstream: most left, no deadlines
 ```
 
 ### Burst guard — what makes a 99% threshold usable
@@ -214,7 +236,7 @@ threshold and the value the current rate can survive — by default a burst of 2
 for 10 seconds. **It can only ever switch earlier than you asked.**
 
 ```bash
-cswap config set autoswitch.burstGuard false   # off
+cfuel config set autoswitch.burstGuard false   # off
 ```
 
 ### Tokens are not percent, so the scale is measured
@@ -267,8 +289,8 @@ account reports. The API only reports one for a limit the account actually
 has, and a limit that exists will stop the work when it fills.
 
 ```bash
-cswap config set autoswitch.model none        # ignore per-model limits
-cswap config set autoswitch.model Fable,Opus  # only these
+cfuel config set autoswitch.model none        # ignore per-model limits
+cfuel config set autoswitch.model Fable,Opus  # only these
 ```
 
 `none` is a word rather than a blank because the load-time clamp turns any
@@ -286,7 +308,7 @@ plan are identical to it while being four times apart in real work. Unweighted,
 one cell of a bar meant different amounts of work on the same row.
 
 ```bash
-cswap config set autoswitch.accountWeights "1=20,2=5,3=5"
+cfuel config set autoswitch.accountWeights "1=20,2=5,3=5"
 ```
 
 Unset accounts fall back to their measured tokens-per-percent, and to equal
@@ -296,9 +318,8 @@ weight before that is known.
 
 - **"Stranded quota" is named as such.** "Nothing is more urgent" and "the
   urgent one is unreachable" are opposite situations that both end in holding,
-  and the log used to report them identically. The screenshot above catches the
-  real case: *account 3 is losing quota faster but has no room to work in;
-  frees up in 1h 13m*.
+  and the log used to report them identically. Found live: *account 3 is losing
+  quota faster but has no room to work in; frees up in 1h 13m*.
 - **The waste projection is in weekly units.** It used to multiply the
   *binding* window's rate by the hours until a *weekly* reset, and report "all
   spendable" about quota that was certainly going to be lost.
@@ -315,7 +336,7 @@ weight before that is known.
 ## Configuration
 
 `settings.json` lives beside your accounts (`~/.local/share/claude-swap/` on
-Linux). `cswap config` lists everything; the keys this fork adds:
+Linux). `cfuel config` lists everything; the keys this fork adds:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -324,18 +345,13 @@ Linux). `cswap config` lists everything; the keys this fork adds:
 | `autoswitch.accountWeights` | — | Relative plan sizes, `1=20,2=5` |
 | `autoswitch.model` | `all` | Per-model weekly limits that gate a switch; `none` to ignore |
 
-The threshold you set with `t` in the TUI is written here too, so it survives
-a restart.
+The threshold you set with `t` in the TUI is written here too, so it survives a
+restart.
+
+**Switching moves every session on the machine.** They all share the active
+login, so arming auto-switch moves all of them at once.
 
 ---
-
-## Notes
-
-- **Switching moves every session on the machine.** They all share the active
-  login, so arming auto-switch moves all of them at once.
-- **The on-disk layout is unchanged from upstream** — same directory, same file
-  names — so this can be installed over an existing claude-swap without
-  touching your accounts, and you can go back.
 
 ## Development
 
@@ -343,11 +359,32 @@ a restart.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2259 tests
+uv run pytest -q                       # 2284 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 
 `art/beep/` keeps the sprite extraction: `PIXELS.txt` is Beep dumped one pixel
 at a time with his palette and every limb marked, and `inspect.png` is the same
-magnified with coordinates. Upstream is tracked as the `upstream` remote:
-`git fetch upstream && git merge upstream/main`.
+magnified with coordinates.
+
+---
+
+## Upstream, and thanks
+
+**cfuel is a fork of [realiti4/claude-swap](https://github.com/realiti4/claude-swap)**
+(the `cswap` command). Everything about managing accounts — adding them,
+storing credentials, rotating, the session and menu-bar modes, the dashboard —
+is upstream's work and still works exactly as documented there. This fork adds
+the parts that answer *when* and *why*: a deadline-aware strategy, a burn rate
+measured from your own transcripts, and a screen built around both.
+
+The on-disk layout is unchanged from upstream, so this can be installed over an
+existing claude-swap without touching your accounts, and you can go back.
+Upstream is tracked as the `upstream` remote:
+
+```bash
+git fetch upstream && git merge upstream/main
+```
+
+MIT, as upstream. See [LICENSE](LICENSE) — copyright Onur Cetinkol, with fork
+changes under the same terms.

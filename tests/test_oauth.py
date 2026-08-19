@@ -842,7 +842,7 @@ class TestFetchUsageForAccount:
 
     def test_persist_failure_logs_warning_with_recovery_hint(self, caplog, capsys):
         """If the persist callback raises, _persist logs at WARNING level with
-        a recovery hint (re-run `cswap --add-account`), not debug, AND prints
+        a recovery hint (re-run `cfuel --add-account`), not debug, AND prints
         a user-visible warning to stdout.
         """
         import logging
@@ -860,14 +860,14 @@ class TestFetchUsageForAccount:
         assert len(warning_records) == 1
         msg = warning_records[0].getMessage()
         assert "failed to persist" in msg
-        assert "cswap --add-account" in msg
+        assert "cfuel --add-account" in msg
         assert "1" in msg
         assert "test@example.com" in msg
 
         # Also verify the user-visible printed warning
         output = capsys.readouterr().out
         assert "failed to save refreshed token" in output
-        assert "cswap --add-account" in output
+        assert "cfuel --add-account" in output
 
 
 class TestClassifyUsageError:

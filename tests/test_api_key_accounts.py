@@ -3,7 +3,7 @@
 Covers kind detection, ``--add-token`` auto-detection, the cross-kind collision
 guard, the ``add_account`` live-key guard, kind+platform-aware active credential
 read/write with OAuth↔API-key mutual exclusion, the "API key — no quota" usage
-display, the ``cswap run`` session guard, and export/import of raw keys.
+display, the ``cfuel run`` session guard, and export/import of raw keys.
 """
 
 from __future__ import annotations
@@ -518,7 +518,7 @@ class TestATornConfigSurvivesAnOrdinarySwitch:
     file, reporting `switched: True`.
 
     Strictly worse than the bug the refusal closed: it needs no API-key slot,
-    it is what a plain `cswap switch` does, and the success line is what makes
+    it is what a plain `cfuel switch` does, and the success line is what makes
     it invisible.
     """
 
@@ -995,7 +995,7 @@ class TestTheSalvageKeepsItsPromise:
         filename character on Linux, so a behavioural test is green here and
         red only on the platform nobody runs locally. The forbidden set is
         Windows', a superset of POSIX's — a name legal there is legal
-        everywhere cswap runs.
+        everywhere cfuel runs.
 
         The codebase already had two answers and neither was reused:
         `credentials.py:1372`'s `.corrupt-{int(time.time())}` and

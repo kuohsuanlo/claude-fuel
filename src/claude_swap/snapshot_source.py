@@ -3,7 +3,7 @@
 Pacing is store-governed: the usage store's persisted poll plans plus its
 freshness/backoff/claim gates (decided atomically in ``UsageStore.reserve``)
 cap every surface at the same per-account cadence, so a dashboard repainting
-every few seconds and a one-shot ``cswap list`` produce identical network
+every few seconds and a one-shot ``cfuel list`` produce identical network
 behavior. This class therefore just runs the same on-demand pass as ``cswap
 list`` (``fetch=None``) each take — the store decides which accounts, if
 any, may actually be fetched — and offers ``store_only`` for shells that

@@ -23,7 +23,7 @@ active account's own usage becomes unreadable for ``unhealthy_ticks``
 consecutive ticks, the engine fails over to any healthy candidate.
 
 Cooldown and quarantine persist in ``<backup_root>/autoswitch_state.json``
-(so cron-driven ``cswap auto --once`` ticks behave across processes), mutated
+(so cron-driven ``cfuel auto --once`` ticks behave across processes), mutated
 read-modify-write under a dedicated file lock.
 """
 
@@ -471,7 +471,7 @@ class QuarantineEvent(AutoSwitchEvent):
     def human(self) -> str:
         return (
             f"Account-{self.number} ({self.email}) quarantined: {self.reason}. "
-            f"Log in with it and run 'cswap --add-account --slot {self.number}' "
+            f"Log in with it and run 'cfuel --add-account --slot {self.number}' "
             "to recover."
         )
 
@@ -576,7 +576,7 @@ def _window_pcts(
     Deliberately restricted to the windows the *decision* reads (same
     ``models`` filter): showing an unconfigured scoped window at 100% next
     to a switch onto that account would look like a bug, when the engine
-    correctly ignored it. Full per-model usage lives in ``cswap list``.
+    correctly ignored it. Full per-model usage lives in ``cfuel list``.
     """
     return {
         name: pct for name, pct, _ in oauth.relevant_windows(usage, models)
@@ -806,7 +806,7 @@ class AutoSwitchEngine:
         self._idle_hold_since: float | None = None
         self._idle_hold_slow = False
         # Burn sensing, when the burst guard is on. Owned by the engine rather
-        # than passed in, so `cswap auto` in a terminal, a cron `--once`, and
+        # than passed in, so `cfuel auto` in a terminal, a cron `--once`, and
         # the TUI all get the same protection without any of them wiring it
         # up. Costs no quota: it reads this machine's own transcripts.
         self._burn: BurnTracker | None = None
@@ -915,7 +915,7 @@ class AutoSwitchEngine:
         if self.switcher.account_kind_for(number) == "api_key":
             return "ok"  # API keys don't expire/refresh
         if self.switcher.live_session_pids_for(number, email):
-            # A live `cswap run` session owns this account's token in its own
+            # A live `cfuel run` session owns this account's token in its own
             # profile. Auto-activating it as the default login too would put
             # one rotating refresh token in two config dirs (the stale-copy
             # failure class) with nobody reading the warning — and its quota
@@ -1145,14 +1145,14 @@ class AutoSwitchEngine:
                 self._emit(
                     NoSwitchEvent(
                         reason="unmanaged-active-account",
-                        detail="run 'cswap --add-account' to include it in rotation",
+                        detail="run 'cfuel --add-account' to include it in rotation",
                     )
                 )
             else:
                 self._emit(
                     NoSwitchEvent(
                         reason="no-active-account",
-                        detail="log in and run 'cswap --add-account' first",
+                        detail="log in and run 'cfuel --add-account' first",
                     )
                 )
             return TickOutcome.NO_ACTION

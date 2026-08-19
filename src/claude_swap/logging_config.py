@@ -9,7 +9,7 @@ class _LazyDirRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler that creates its parent dir on first emit.
 
     Keeps the backup root from being materialized just because the switcher
-    was instantiated. Necessary so a no-op run (e.g. ``cswap --status`` with
+    was instantiated. Necessary so a no-op run (e.g. ``cfuel --status`` with
     no managed accounts) doesn't lay down ``cache/`` or log files inside the
     XDG path, which would later trip the legacy → XDG migration collision
     check if a legacy directory appeared between runs.

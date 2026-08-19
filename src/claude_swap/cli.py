@@ -38,12 +38,12 @@ def _prog_name() -> str:
             name = name[: -len(ext)]
             break
     if not name or name in {"__main__", "python", "python3", "py"}:
-        return "cswap"
+        return "cfuel"
     return name
 
 
 # Memorable subcommand aliases → the long-standing flags they expand to. Lets
-# users type `cswap list`, `cswap status`, `cswap add`, etc. instead of `--list`
+# users type `cfuel list`, `cfuel status`, `cfuel add`, etc. instead of `--list`
 # / `--status` / `--add-account`, which all still work. `switch` is special-cased
 # below (a bare `switch` rotates; `switch <target>` jumps to one account) and
 # `run`/`auto` keep their own pre-dispatch parsers, so none of those are listed here.
@@ -77,7 +77,7 @@ def _translate_subcommand(argv: list[str]) -> list[str]:
     established ``--flag`` interface — and every existing test that drives it —
     is left untouched. Tokens after the verb pass through verbatim, so flags
     like ``--json``, ``--strategy``, ``--slot``, and ``--force`` keep combining
-    exactly as before (e.g. ``cswap switch --strategy best``, ``cswap list --json``).
+    exactly as before (e.g. ``cfuel switch --strategy best``, ``cfuel list --json``).
     """
     if not argv:
         return argv
@@ -98,13 +98,13 @@ def _translate_subcommand(argv: list[str]) -> list[str]:
 
 
 def _run_command(argv: list[str]) -> None:
-    """Handle `cswap run NUM|EMAIL [--no-share] [-- <claude args>]`.
+    """Handle `cfuel run NUM|EMAIL [--no-share] [-- <claude args>]`.
 
     Pre-dispatched before the main parser is built: a positional subcommand
     can't coexist with main()'s mutually-exclusive flag group, and this keeps
     the existing parser untouched. Limitation: `run` must be the
     first argument (`cswap --debug run 2` is not supported; use
-    `cswap run 2 --debug`).
+    `cfuel run 2 --debug`).
 
     On POSIX this execs claude and never returns; on Windows it exits with
     claude's return code. Either way the post-dispatch update check in
@@ -127,11 +127,11 @@ def _run_command(argv: list[str]) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  cswap run 2
-  cswap run user@example.com
-  cswap run 2 --no-share
-  cswap run 2 --share-history
-  cswap run 2 -- --resume
+  cfuel run 2
+  cfuel run user@example.com
+  cfuel run 2 --no-share
+  cfuel run 2 --share-history
+  cfuel run 2 -- --resume
         """,
     )
     parser.add_argument(
@@ -139,7 +139,7 @@ Examples:
         nargs="?",
         metavar="NUM|EMAIL",
         help="Account to run (number or email). Omit to use the current "
-        "directory's mapping (see `cswap map`).",
+        "directory's mapping (see `cfuel map`).",
     )
     parser.add_argument(
         "--no-share",
@@ -226,7 +226,7 @@ def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
 
 
 def _map_command(argv: list[str]) -> None:
-    """Handle `cswap map [NUM|EMAIL] [PATH]`.
+    """Handle `cfuel map [NUM|EMAIL] [PATH]`.
 
     With no NUM|EMAIL, lists all mappings. Otherwise maps PATH (default: the
     current directory) to the given account. Pre-dispatched before the main
@@ -234,18 +234,18 @@ def _map_command(argv: list[str]) -> None:
     mutually-exclusive group can't hold a positional subcommand).
     """
     parser = argparse.ArgumentParser(
-        prog="cswap map",
+        prog="cfuel map",
         description=(
-            "Map a stored account to a directory so `cswap run` (with no "
+            "Map a stored account to a directory so `cfuel run` (with no "
             "account) auto-launches it there. With no arguments, lists all "
             "mappings."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  cswap map 2 ~/work/client-app
-  cswap map user@example.com          # map the current directory
-  cswap map                           # list all mappings
+  cfuel map 2 ~/work/client-app
+  cfuel map user@example.com          # map the current directory
+  cfuel map                           # list all mappings
         """,
     )
     parser.add_argument(
@@ -349,7 +349,7 @@ def _unclaimed_command(argv: list[str]) -> None:
         prog=f"{_prog_name()} unclaimed",
         description=(
             "List stashed credential entries, or purge one by id. "
-            "Purging deletes the bytes — recovery is /login + `cswap add`."
+            "Purging deletes the bytes — recovery is /login + `cfuel add`."
         ),
     )
     parser.add_argument(
@@ -400,7 +400,7 @@ def _swap_command(argv: list[str]) -> None:
         prog=f"{_prog_name()} swap",
         description=(
             "Exchange two accounts' slot numbers, so they trade places in "
-            "`cswap list` and as numeric targets. Aliases, backups, and "
+            "`cfuel list` and as numeric targets. Aliases, backups, and "
             "session history move with their account."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -487,7 +487,7 @@ Examples:
 
 
 def _alias_command(argv: list[str]) -> None:
-    """Handle `cswap alias [NUM|EMAIL] [NAME] [--unset]`.
+    """Handle `cfuel alias [NUM|EMAIL] [NAME] [--unset]`.
 
     With no arguments, lists all aliases. Otherwise sets (or, with --unset,
     removes) the alias for the given account. Pre-dispatched before the main
@@ -495,7 +495,7 @@ def _alias_command(argv: list[str]) -> None:
     mutually-exclusive group can't hold a positional subcommand).
     """
     parser = argparse.ArgumentParser(
-        prog="cswap alias",
+        prog="cfuel alias",
         description=(
             "Set, remove, or list a short display alias for an account. "
             "Once set, the alias can be used anywhere an account number or "
@@ -504,10 +504,10 @@ def _alias_command(argv: list[str]) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  cswap alias 2 dev
-  cswap alias user@example.com dev
-  cswap alias 2 --unset
-  cswap alias                         # list all aliases
+  cfuel alias 2 dev
+  cfuel alias user@example.com dev
+  cfuel alias 2 --unset
+  cfuel alias                         # list all aliases
         """,
     )
     parser.add_argument(
@@ -562,7 +562,7 @@ Examples:
 
 
 def _auto_command(argv: list[str]) -> None:
-    """Handle `cswap auto [--once] [--json] [...]`.
+    """Handle `cfuel auto [--once] [--json] [...]`.
 
     Pre-dispatched before the main parser is built, like `run` (and with the
     same limitation: `auto` must be the first argument). Runs the auto-switch
@@ -575,7 +575,7 @@ def _auto_command(argv: list[str]) -> None:
     import time as _time
 
     parser = argparse.ArgumentParser(
-        prog="cswap auto",
+        prog="cfuel auto",
         description=(
             "Automatically switch accounts when the active one nears its "
             "5h/7d rate limit. Runs a foreground polling loop; use --once "
@@ -590,12 +590,12 @@ Exit codes with --once:
   3  blocked: wanted to switch but no viable target / all exhausted
 
 Examples:
-  cswap auto                       # foreground loop, switch at 90%% used
-  cswap auto --threshold 80        # switch earlier
-  cswap auto --model Fable         # also switch when the Fable weekly limit is hit
-  cswap auto --json                # one JSON event per line (for scripts)
-  cswap auto --once; echo $?       # single tick, outcome in exit code
-  cswap auto --dry-run             # log decisions, never actually switch
+  cfuel auto                       # foreground loop, switch at 90%% used
+  cfuel auto --threshold 80        # switch earlier
+  cfuel auto --model Fable         # also switch when the Fable weekly limit is hit
+  cfuel auto --json                # one JSON event per line (for scripts)
+  cfuel auto --once; echo $?       # single tick, outcome in exit code
+  cfuel auto --dry-run             # log decisions, never actually switch
 
 Defaults live in settings.json in the backup root; flags override them.
         """,
@@ -744,13 +744,13 @@ Defaults live in settings.json in the backup root; flags override them.
 
 
 def _config_command(argv: list[str]) -> None:
-    """Handle `cswap config [list|get KEY|set KEY VALUE|unset KEY|path]`.
+    """Handle `cfuel config [list|get KEY|set KEY VALUE|unset KEY|path]`.
 
     Pre-dispatched before the main parser is built, like `run` and `auto`
     (same limitation: `config` must be the first argument). Edits
     settings.json in the backup root with strict validation — unlike loading,
     which forgivingly clamps — so a typo'd key or out-of-range value errors
-    loudly here instead of silently degrading at `cswap auto` time.
+    loudly here instead of silently degrading at `cfuel auto` time.
     """
     from claude_swap.settings import (
         SETTING_SPECS,
@@ -767,7 +767,7 @@ def _config_command(argv: list[str]) -> None:
         for spec in SETTING_SPECS.values()
     )
     parser = argparse.ArgumentParser(
-        prog="cswap config",
+        prog="cfuel config",
         description=(
             "Read and edit claude-swap settings (settings.json in the "
             "backup root)."
@@ -778,11 +778,11 @@ Keys:
 {key_lines}
 
 Examples:
-  cswap config                              # list effective settings
-  cswap config get autoswitch.threshold
-  cswap config set autoswitch.threshold 80
-  cswap config unset autoswitch.threshold   # back to the default
-  cswap config path                         # where settings.json lives
+  cfuel config                              # list effective settings
+  cfuel config get autoswitch.threshold
+  cfuel config set autoswitch.threshold 80
+  cfuel config unset autoswitch.threshold   # back to the default
+  cfuel config path                         # where settings.json lives
         """,
     )
     parser.add_argument(
@@ -802,7 +802,7 @@ Examples:
     p_get.add_argument("key", metavar="KEY", help="Dotted key, e.g. autoswitch.threshold")
     for p in (p_list, p_get):
         # SUPPRESS: without it the subparser's False default would clobber a
-        # pre-verb `cswap config --json` in the shared namespace.
+        # pre-verb `cfuel config --json` in the shared namespace.
         p.add_argument(
             "--json",
             action="store_true",
@@ -914,15 +914,23 @@ def _use_native_tls() -> None:
 
 
 def fleet_main() -> None:
-    """Entry point for ``cfuel``: open the fleet view and nothing else.
+    """Entry point for ``cfuel``.
 
-    Its own console script rather than a ``cswap`` subcommand because it is
-    the whole interface for a different question — "what am I about to waste,
-    and how fast am I burning?" — and typing one word to get an answer is the
-    point. It takes no arguments on purpose: everything it can do is a
-    keystroke away once it is up, and every setting it changes is written to
-    the same settings.json ``cswap auto`` reads.
+    BARE ``cfuel`` OPENS THE FLEET VIEW — one word, one answer, which is the
+    whole point of the command; everything the view can do is a keystroke away
+    once it is up.
+
+    Anything after it is the full account CLI (``cfuel add``, ``cfuel list``,
+    ``cfuel auto``, ``cfuel config``…). This package installs exactly one
+    console script so it can sit alongside upstream claude-swap: claiming
+    ``cswap`` as well would collide with upstream's own scripts, and whichever
+    was installed last would silently win. Both read the same settings.json and
+    the same accounts, so running one or the other is a matter of which command
+    is on the PATH, never of which data you get.
     """
+    if sys.argv[1:]:
+        main()
+        return
     force_utf8_output()
     _use_native_tls()
     if not (sys.stdout.isatty() and sys.stdin.isatty()):
@@ -998,7 +1006,7 @@ def main() -> None:
     if not argv and sys.stdout.isatty() and sys.stdin.isatty():
         argv = ["--tui"]
 
-    # Memorable subcommands (`cswap switch <email>`, `cswap list`, `cswap help`, ...)
+    # Memorable subcommands (`cfuel switch <email>`, `cfuel list`, `cswap help`, ...)
     # are rewritten to the equivalent flags so the original `--flag` interface
     # keeps working unchanged.
     argv = _translate_subcommand(argv)

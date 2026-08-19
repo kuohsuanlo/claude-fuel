@@ -6,7 +6,7 @@ treated as empty — its data had a 15s shelf life anyway). One failed round
 trip no longer blanks every account: a failure updates the error/backoff
 fields and never touches the last-good measurement (stale-on-error). The
 table is shared by ``--list``/``--status`` (on-demand refresh of stale
-entries) and ``cswap auto`` (scheduled polling), so each learns from the
+entries) and ``cfuel auto`` (scheduled polling), so each learns from the
 other's fetches.
 
 The store persists only *measurements* (``lastGood``) and *fetch state*

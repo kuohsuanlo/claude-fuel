@@ -428,7 +428,7 @@ class TestAliasCommand:
     def test_rename_via_existing_alias_identifier(
         self, temp_home: Path, sample_sequence_data: dict
     ):
-        """cswap alias <old> <new> — identifier can itself be an alias."""
+        """cfuel alias <old> <new> — identifier can itself be an alias."""
         switcher = ClaudeAccountSwitcher()
         self._write(switcher, sample_sequence_data)
         switcher.set_alias("1", "dev")
@@ -2845,7 +2845,7 @@ class TestActiveAccountRefresh:
     def test_foreign_live_credential_under_the_lock_is_never_consumed(
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict
     ):
-        """TOCTOU guard: a `cswap switch` completing between the pre-lock
+        """TOCTOU guard: a `cfuel switch` completing between the pre-lock
         provenance check and lock acquisition replaces the live credential
         with another slot's. The under-lock re-read must re-verify lineage —
         POSTing the foreign grant would rotate the other slot's lineage and
@@ -3720,7 +3720,7 @@ class TestSwitchToSelfSlotAndForce:
         assert live["creds"] == self.LIVE_1
         out = capsys.readouterr().out
         assert "Already on" in out and "Account-1" in out
-        assert "cswap --switch-to 1 --force" in out
+        assert "cfuel --switch-to 1 --force" in out
 
     def test_force_self_activation_restores_imported_creds(
         self,
@@ -6669,7 +6669,7 @@ class TestProvenanceGuard:
         self, temp_home, mock_claude_config, sample_sequence_data,
     ):
         """Resolved to no managed slot: preserve, warn, proceed — the message
-        can't name a slot, so it recommends a plain `cswap add`."""
+        can't name a slot, so it recommends a plain `cfuel add`."""
         switcher, creds_store, configs_store = self._setup_two_accounts(
             temp_home, sample_sequence_data,
         )
@@ -8349,7 +8349,7 @@ class TestAddAccountAlias:
         assert data["accounts"]["1"]["alias"] == "dev"
 
     def test_readd_without_alias_preserves_existing(self, temp_home: Path):
-        """Re-running `cswap add` (refresh-in-place) without --alias must not
+        """Re-running `cfuel add` (refresh-in-place) without --alias must not
         wipe a previously set alias."""
         fake_creds = json.dumps({"claudeAiOauth": {"accessToken": "tok"}})
         switcher = self._config_switcher(temp_home, "a@x.com")
@@ -8829,7 +8829,7 @@ class TestDegradedReadProvenance:
         self, temp_home: Path, mock_claude_config: Path,
         sample_sequence_data: dict, monkeypatch,
     ):
-        """`cswap --status` must arm the same guard the collect pass does.
+        """`cfuel --status` must arm the same guard the collect pass does.
 
         _build_accounts_info copies BOTH active.keychain_unavailable and
         active.degraded onto the switcher; _active_account_usage copies only
@@ -9167,7 +9167,7 @@ class TestSwitchUnreadableBackup:
         self, temp_home: Path, sample_sequence_data: dict, monkeypatch,
         block_real_keychain,
     ):
-        """The SAME promise on the ordinary `cswap switch`.
+        """The SAME promise on the ordinary `cfuel switch`.
 
         _perform_switch has two target-read sites. The M1 test above lands on
         the DIRECT-ACTIVATION branch, because its fixture's live identity
@@ -9673,7 +9673,7 @@ class TestConsumeGate:
         store, so an absent re-read really does mean removed.
         """
         s = self._switcher(sample_sequence_data)
-        # No stored credential for slot 1: `cswap remove` landed first.
+        # No stored credential for slot 1: `cfuel remove` landed first.
         posted = []
 
         def mock_refresh(credentials, **kw):
@@ -10418,7 +10418,7 @@ class TestGateUltraReviewFixes:
         The loser used to return "transient", which autoswitch renders as
         "could not freshen any candidate (network?)" — sending the user to
         check a connection that is fine, for a condition no network change can
-        affect. On a machine where the collector and a manual `cswap switch`
+        affect. On a machine where the collector and a manual `cfuel switch`
         overlap this is routine, not an edge.
         """
         s = self._switcher(sample_sequence_data)
@@ -11156,7 +11156,7 @@ class TestGateUltraReviewFixes:
                 "DEFECT: the invalidation was denied and NO stale marker "
                 "landed — the marker's own write target was the directory "
                 "that denied it. The profile's token is unexpired, so the "
-                "local reuse check passes and `cswap run` launches claude on "
+                "local reuse check passes and `cfuel run` launches claude on "
                 "the spent generation, silently"
             )
         else:
@@ -11680,7 +11680,7 @@ class TestUnreadableBackupIsNotAbsent:
         self, temp_home: Path, sample_sequence_data: dict, monkeypatch,
         block_real_keychain,
     ):
-        """``cswap import`` must not overwrite a healthy slot it cannot read.
+        """``cfuel import`` must not overwrite a healthy slot it cannot read.
 
         ``_slot_token_dead``'s ``stored`` read is plain. Unreadable → ``""``
         → ``credential_fingerprint("")`` is None → ``token_dead`` skips the

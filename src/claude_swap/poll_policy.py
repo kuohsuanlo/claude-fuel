@@ -54,7 +54,7 @@ outlasts an hour *past* that margin.
 
 Plans computed here are persisted per account in the usage store
 (``nextPollAt``/``pollIntervalS``) by whichever collector fetched, so every
-surface — ``cswap list``, the TUI, the menu bar, the auto engine — inherits
+surface — ``cfuel list``, the TUI, the menu bar, the auto engine — inherits
 the same cadence no matter how often it repaints.
 
 If a future probe revises the measured shape, adjust the constants in this

@@ -539,7 +539,7 @@ class TestBootstrap:
         self, manager, seeded_switcher, auth_status_tracks_seed, refresh_rotates,
         legacy_location: bool,
     ):
-        """A second `cswap run` joining a live session must not invalidate
+        """A second `cfuel run` joining a live session must not invalidate
         under the running claude; the marker survives for later."""
         session_dir, _, _ = manager.setup_session("2", share=False)
         (session_dir / ".credentials.json").write_text("live lineage")
@@ -1363,7 +1363,7 @@ class TestRun:
             manager.run("2", [])
 
         # Warned, and the overrides are scrubbed from the launched env —
-        # `cswap run 2` means account 2, not whatever the API key resolves to.
+        # `cfuel run 2` means account 2, not whatever the API key resolves to.
         out = capsys.readouterr().out
         assert "Ignoring ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN" in out
         assert "ANTHROPIC_API_KEY" not in exc.value.env
@@ -1540,7 +1540,7 @@ class TestGuards:
     ):
         """Re-login + --add-account (or any backup cred write) must force the
         non-live session profile to re-bootstrap — otherwise the documented
-        recovery path leaves `cswap run` on stale credentials that still pass
+        recovery path leaves `cfuel run` on stale credentials that still pass
         the local reuse check."""
         session_dir = session_dir_for(
             seeded_switcher.backup_dir, ACCOUNT_NUM, ACCOUNT_EMAIL
@@ -1725,7 +1725,7 @@ class TestGuards:
     def test_list_skips_refresh_for_live_session_accounts(
         self, seeded_switcher, monkeypatch
     ):
-        """cswap --list must not proactively refresh an account that is live in
+        """cfuel --list must not proactively refresh an account that is live in
         a session — rotating the backup copy's token could invalidate the
         session's copy."""
         session_dir = session_dir_for(
@@ -2494,7 +2494,7 @@ class TestAConsumedGrantIsNotSpentOnAProfileThatWonBootstrap:
     """A one-time grant consumed for THIS pass must reach the profile it was for.
 
     The consume runs before the bootstrap lock (it POSTs, and must never hold
-    one). The under-lock re-check then returns early when another `cswap run`
+    one). The under-lock re-check then returns early when another `cfuel run`
     bootstrapped while we waited — at which point this pass has already burned
     a one-time refresh token whose successor nobody uses for the session it was
     fetched for. The successor is persisted to the BACKUP, so nothing is lost;

@@ -200,7 +200,7 @@ SENTINEL_NOTES = {
     USAGE_FOREIGN_CREDENTIAL: "live credential belongs to another account — a switch repairs it",
     USAGE_API_KEY: "API key (no quota)",
     USAGE_KEYCHAIN_UNAVAILABLE: "keychain unavailable — locked or in use; try again",
-    USAGE_RELOGIN_REQUIRED: "re-login needed — refresh token dead; log in with Claude Code, then run: cswap add",
+    USAGE_RELOGIN_REQUIRED: "re-login needed — refresh token dead; log in with Claude Code, then run: cfuel add",
 }
 
 
@@ -631,7 +631,7 @@ class ClaudeAccountSwitcher:
 
         The DEFAULT path is the most-used one and had no such guard: it reads
         through ``_read_credentials``, which is ``_read_active_credentials()``
-        with ``degraded`` discarded. So a locked-keychain ``cswap add``
+        with ``degraded`` discarded. So a locked-keychain ``cfuel add``
         captured the possibly-spent fallback into the slot backup, and
         ``add_account`` then cleared the dead-token strike — re-creating on the
         common path exactly the stale-consume this PR exists to prevent.
@@ -784,7 +784,7 @@ class ClaudeAccountSwitcher:
         import, switch backing up, or a usage-refresh rotation): a session profile
         seeded from the old credentials may now hold a stale or rotated-out token
         that still passes the local reuse check. Drop the profile's credential
-        material so the next `cswap run` re-bootstraps from this fresh backup
+        material so the next `cfuel run` re-bootstraps from this fresh backup
         (history is preserved). A LIVE session keeps its own copy untouched — claude
         manages it; pulling credentials out from under a running process would be
         worse than the drift caveat — but gets a stale marker so setup_session
@@ -823,7 +823,7 @@ class ClaudeAccountSwitcher:
         "successor" byte-identical to what the store now holds, and a
         successful refresh is demoted to ``transient`` (measured: the tick then
         emits "could not freshen any candidate (network?)" forever over a
-        healthy slot, and ``cswap run`` prints "Could not refresh the token").
+        healthy slot, and ``cfuel run`` prints "Could not refresh the token").
 
         So the invalidation is contained, and its failure LEAVES THE MARKER
         instead. That is not a downgrade: a profile whose access token is still
@@ -971,7 +971,7 @@ class ClaudeAccountSwitcher:
         """Set (or rename) the alias for the account matching identifier.
 
         ``identifier`` is a slot number, email, or existing alias (so a
-        typo'd alias can be corrected with ``cswap alias <old> <new>`` as
+        typo'd alias can be corrected with ``cfuel alias <old> <new>`` as
         well as by number/email). Returns ``(account_num, normalized_alias)``.
 
         Raises:
@@ -1009,7 +1009,7 @@ class ClaudeAccountSwitcher:
         """Clear the alias for the account matching identifier.
 
         Returns the account number. Idempotent: clearing an already-unset
-        alias succeeds silently (no error), matching ``cswap config unset``'s
+        alias succeeds silently (no error), matching ``cfuel config unset``'s
         posture of "the end state is what you asked for".
 
         Raises:
@@ -1050,7 +1050,7 @@ class ClaudeAccountSwitcher:
         Everything keyed by the slot number moves with the swap: the
         sequence records (including aliases, which belong to the account),
         the per-slot credential and config backups, membership in
-        ``sequence`` (kept sorted, so rotation and ``cswap list`` order
+        ``sequence`` (kept sorted, so rotation and ``cfuel list`` order
         follow the new numbers), ``activeAccountNumber``, and each slot's
         session profile directory (history preserved). Directory mappings key on
         (email, org) and are unaffected. Usage-cache rows key on the slot
@@ -1300,7 +1300,7 @@ class ClaudeAccountSwitcher:
                             f"Found leftover staging from an interrupted swap: "
                             f"{path}. It holds that slot's pre-swap credentials "
                             f"and may be the only surviving copy. Verify both "
-                            f"accounts still work (`cswap list`), then delete "
+                            f"accounts still work (`cfuel list`), then delete "
                             f"the file and retry."
                         )
                     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1639,7 +1639,7 @@ class ClaudeAccountSwitcher:
         self._logger.info(f"Moved slot: {num_src} ({email}) -> {target}")
 
     def slot_for_directory(self, directory: str | Path) -> tuple[str | None, str | None]:
-        """Resolve a directory to its mapped account slot, for `cswap run`.
+        """Resolve a directory to its mapped account slot, for `cfuel run`.
 
         Returns (slot, email): (None, None) when no mapping covers the
         directory, (None, email) when a mapping exists but its account was
@@ -1659,13 +1659,13 @@ class ClaudeAccountSwitcher:
         return slot, email
 
     def list_mappings(self) -> None:
-        """Print all directory → account mappings (for `cswap map`)."""
+        """Print all directory → account mappings (for `cfuel map`)."""
         from claude_swap.mappings import MappingStore
 
         mappings = MappingStore(self.backup_dir).all()
         if not mappings:
             print(dimmed("No directory mappings yet."))
-            print(muted("Map one with: cswap map <NUM|EMAIL> [PATH]"))
+            print(muted("Map one with: cfuel map <NUM|EMAIL> [PATH]"))
             return
         seq = self._get_sequence_data_migrated() or {}
         print(bolded("Directory mappings:"))
@@ -1823,7 +1823,7 @@ class ClaudeAccountSwitcher:
 
         Excludes slots without usable stored backups and slots the user has
         disabled (``cswap disable``). Disabled slots stay managed and remain
-        valid explicit ``cswap switch <num|email>`` targets — they are only
+        valid explicit ``cfuel switch <num|email>`` targets — they are only
         held out of automatic rotation and the usage-aware strategies.
         """
         data = self._get_sequence_data() or {}
@@ -1858,9 +1858,9 @@ class ClaudeAccountSwitcher:
         """Hold an account out of rotation (``disabled=True``) or return it.
 
         Disabling only affects automatic selection — the auto-switch engine,
-        bare ``cswap switch`` rotation, and the ``best`` / ``next-available``
+        bare ``cfuel switch`` rotation, and the ``best`` / ``next-available``
         strategies all skip disabled slots. The account stays managed and is
-        still a valid explicit ``cswap switch <num|email>`` target, so you can
+        still a valid explicit ``cfuel switch <num|email>`` target, so you can
         park an account without losing its stored login. Re-enabling restores
         it to rotation in its original sequence position.
 
@@ -1941,7 +1941,7 @@ class ClaudeAccountSwitcher:
         return self._get_current_account() is not None
 
     def live_session_pids_for(self, account_num: str, email: str) -> list[int]:
-        """Public wrapper: PIDs of live ``cswap run`` sessions for a slot."""
+        """Public wrapper: PIDs of live ``cfuel run`` sessions for a slot."""
         return self._live_session_pids(account_num, email)
 
     def persist_backup_credentials(
@@ -2382,7 +2382,7 @@ class ClaudeAccountSwitcher:
                 self._logger.error(
                     "Account %s's consumed successor could not be persisted "
                     "or stashed — it survives only for this pass. Fix the "
-                    "storage failure, then re-login and `cswap add` if the "
+                    "storage failure, then re-login and `cfuel add` if the "
                     "slot strikes.", account_num, exc_info=True,
                 )
         if stashed_reason in _DEMOTING_STASH_REASONS:
@@ -2667,7 +2667,7 @@ class ClaudeAccountSwitcher:
         Write-only storage: entries are created when a switch displaces live
         credential bytes it could not attribute to the outgoing slot, and are
         never consumed automatically — recovery from any such state is the
-        documented ``/login`` + ``cswap add [--slot N]``.
+        documented ``/login`` + ``cfuel add [--slot N]``.
         """
         return self._store._list_unclaimed_credentials()
 
@@ -2752,7 +2752,7 @@ class ClaudeAccountSwitcher:
     def _invalidate_session_credentials(self, account_num: str, email: str) -> None:
         """Drop a session profile's credential material, keeping its history.
 
-        The next `cswap run` fails the reuse check and re-bootstraps from
+        The next `cfuel run` fails the reuse check and re-bootstraps from
         backup; the bootstrap merges .claude.json, so the profile's own
         projects/history survive. Used when backup credentials change under
         an existing profile (e.g. --import --force).
@@ -3111,7 +3111,7 @@ class ClaudeAccountSwitcher:
         )
         raise ConfigError(
             f"Email '{identifier}' is ambiguous — matches accounts: {details}. "
-            f"Use account number instead (e.g., cswap --switch-to 1)."
+            f"Use account number instead (e.g., cfuel --switch-to 1)."
         )
 
     def _get_sequence_data_migrated(self) -> dict | None:
@@ -3815,7 +3815,7 @@ class ClaudeAccountSwitcher:
         # .consume-N.lock held by another process, this still POSTed.
         #
         # The interleaving it closes: is_active is decided once per collect
-        # pass, so a pass that started before a `cswap switch` routes slot N
+        # pass, so a pass that started before a `cfuel switch` routes slot N
         # through the gate while a later pass treats N as active and arrives
         # here. The gate releases the global lock across its POST by design,
         # so this path could take it, read the same lineage and POST it too —
@@ -3973,7 +3973,7 @@ class ClaudeAccountSwitcher:
                     # grant. Defer to the next pass.
                     return _defer(force_refresh)
                 live_oauth = oauth.extract_oauth_data(live) if live else None
-                # Under-lock TOCTOU guards. A `cswap switch` or `/login`
+                # Under-lock TOCTOU guards. A `cfuel switch` or `/login`
                 # completing between the pre-lock attribution and lock
                 # acquisition replaces the live credential (and the config
                 # identity). Two independent checks, because rotation and
@@ -4158,7 +4158,7 @@ class ClaudeAccountSwitcher:
                         working = backup
                     else:
                         # The POST runs while holding the account FileLock
-                        # (contended by `cswap switch` with a 10s acquire
+                        # (contended by `cfuel switch` with a 10s acquire
                         # budget) and CC's credential locks. Bound it well
                         # inside that budget so a slow network can't make a
                         # concurrent switch's acquire expire — the switch
@@ -4517,7 +4517,7 @@ class ClaudeAccountSwitcher:
         # usage would silently freeze at the last pre-session measurement.
         # Fetch with the profile's newest credential, strictly read-only
         # (is_active=True: no refresh, no persist): rotating the profile's
-        # family here would log the next `cswap run` out the same way.
+        # family here would log the next `cfuel run` out the same way.
         session_dir = self._session_dir(str(num), email)
         session_creds = read_session_credentials(session_dir)
         if session_creds and session_identity_drifted(session_dir, email, org_uuid):
@@ -4722,7 +4722,7 @@ class ClaudeAccountSwitcher:
         """Is this slot quarantined as refresh-token-dead, right now?
 
         The same question :meth:`_entry_token_dead` answers for the collectors,
-        reachable from a caller that has only a slot number — `cswap import`'s
+        reachable from a caller that has only a slot number — `cfuel import`'s
         auto-heal, which must agree with them: the heal exists to release a
         quarantine the collectors imposed, so a different verdict means the
         remedy the "re-login needed" message names silently does nothing.
@@ -4927,7 +4927,7 @@ class ClaudeAccountSwitcher:
         against the current one and only recommends a switch it can *prove*
         lands on strictly more headroom — never onto an account worse than (or
         merely unverifiable against) where the user already is. When a switch
-        can't be proven beneficial, it stays put; bare ``cswap --switch``
+        can't be proven beneficial, it stays put; bare ``cfuel --switch``
         remains the way to force a plain rotation. ``models`` folds the named
         per-model weekly windows into every headroom comparison (see
         ``oauth.account_headroom``). Returns ``(target, note)``:
@@ -5021,7 +5021,7 @@ class ClaudeAccountSwitcher:
                         f"Account-{other} and Account-{snum} hold the same "
                         f"credential ({email}) — one slot's backup was "
                         "overwritten. Log in with the missing account and "
-                        "re-add it: cswap add --slot N"
+                        "re-add it: cfuel add --slot N"
                     )
                 else:
                     by_fp[fp] = snum
@@ -5088,7 +5088,7 @@ class ClaudeAccountSwitcher:
                     f"Account-{other} and Account-{snum} report identical "
                     "usage and reset times — they may be the same account "
                     "(issue #117). If it persists, log in with the missing "
-                    "account and re-add it: cswap add --slot N"
+                    "account and re-add it: cfuel add --slot N"
                 )
             else:
                 seen[key] = snum
@@ -5363,7 +5363,7 @@ class ClaudeAccountSwitcher:
             f"({current_email}) to managed list? [Y/n] "
         )
         if response.lower() == "n":
-            print(dimmed("Setup cancelled. You can run 'cswap --add-account' later."))
+            print(dimmed("Setup cancelled. You can run 'cfuel --add-account' later."))
             return
 
         self.add_account()
@@ -5452,7 +5452,7 @@ class ClaudeAccountSwitcher:
 
         ``"best"`` only switches when it can prove another account has more
         remaining quota; if usage can't be fetched or no candidate is provably
-        better, it stays put (run a plain ``cswap --switch`` to rotate anyway).
+        better, it stays put (run a plain ``cfuel --switch`` to rotate anyway).
         ``"next-available"`` rotates and skips accounts at their limit, falling
         back to plain rotation when usage is unavailable. Both apply only to the
         normal path (a live Claude login present); the fresh-machine path (no
@@ -5478,7 +5478,7 @@ class ClaudeAccountSwitcher:
         self._get_sequence_data_migrated()
 
         # Fresh-machine path: no live Claude session, but we have managed accounts
-        # (e.g. right after cswap --import). Activate the recorded
+        # (e.g. right after cfuel --import). Activate the recorded
         # activeAccountNumber, or fall back to the first slot in sequence.
         # With no live state to capture, the target must have valid backups —
         # walk the sequence if the preferred target is broken.
@@ -5500,7 +5500,7 @@ class ClaudeAccountSwitcher:
                     reason = "(no stored credentials/config)"
                     console_reason = (
                         "(no stored credentials/config, re-add with "
-                        f"cswap --add-account --slot {target})"
+                        f"cfuel --add-account --slot {target})"
                     )
                 if json_output:
                     warnings.append(f"Skipped Account-{target} {reason}")
@@ -5523,7 +5523,7 @@ class ClaudeAccountSwitcher:
                         )
                     raise ConfigError(
                         "No managed accounts have valid stored credentials/config. "
-                        "Re-add a slot with: cswap --add-account --slot <number>"
+                        "Re-add a slot with: cfuel --add-account --slot <number>"
                     )
                 target = fallback
             op = self._perform_switch(target, emit_output=not json_output)
@@ -5545,7 +5545,7 @@ class ClaudeAccountSwitcher:
                     reason="unmanaged-account",
                     from_ref=ref,
                     to_ref=ref,
-                    message="Active account is not managed; run cswap --add-account",
+                    message="Active account is not managed; run cfuel --add-account",
                 )
             print(f"{accent('Notice:')} Active account '{current_email}' was not managed.")
             self.add_account()
@@ -5584,7 +5584,7 @@ class ClaudeAccountSwitcher:
 
         # Usage-aware "jump to most headroom". Only switches when another
         # account is provably better; otherwise stays put (never moves onto a
-        # worse or unverifiable account). Bare `cswap --switch` rotates anyway.
+        # worse or unverifiable account). Bare `cfuel --switch` rotates anyway.
         if strategy == "best":
             best_usage = self._usage_by_account()
             self._warn_inert_models(best_usage, models, json_output, warnings)
@@ -5609,7 +5609,7 @@ class ClaudeAccountSwitcher:
                     )
                 print(dimmed(
                     f"Current account usage is unavailable — staying on "
-                    f"Account-{current_num}. Run cswap --switch to rotate."
+                    f"Account-{current_num}. Run cfuel --switch to rotate."
                 ))
                 return None
             if note == "no-comparison":
@@ -5624,7 +5624,7 @@ class ClaudeAccountSwitcher:
                     )
                 print(dimmed(
                     f"No other account has usage data to compare — staying on "
-                    f"Account-{current_num}. Run cswap --switch to rotate."
+                    f"Account-{current_num}. Run cfuel --switch to rotate."
                 ))
                 return None
             if note == "incomplete-comparison":
@@ -5719,7 +5719,7 @@ class ClaudeAccountSwitcher:
                     print(
                         f"{accent('Skipping')} Account-{candidate} "
                         f"(no stored credentials/config, re-add with "
-                        f"cswap --add-account --slot {candidate})"
+                        f"cfuel --add-account --slot {candidate})"
                     )
                 continue
             if strategy == "next-available":
@@ -5779,7 +5779,7 @@ class ClaudeAccountSwitcher:
                 )
             print(dimmed(
                 "No other accounts have valid stored credentials/config.\n"
-                "Re-add a skipped slot with: cswap --add-account --slot <number>"
+                "Re-add a skipped slot with: cfuel --add-account --slot <number>"
             ))
             return None
 
@@ -5908,7 +5908,7 @@ class ClaudeAccountSwitcher:
                         print(dimmed(
                             "To rewrite the live login from the stored backup "
                             "(e.g. after --import), run: "
-                            f"cswap --switch-to {target_account} --force"
+                            f"cfuel --switch-to {target_account} --force"
                         ))
                         return None
                     return self._switch_noop(
@@ -6250,7 +6250,7 @@ class ClaudeAccountSwitcher:
         direct-activation branch (fresh machine, post-import, --force) and
         the normal branch (every ordinary switch on a working install) — and
         only the first carried the unreadable check. The normal branch sent
-        every ordinary `cswap switch` to "Re-add with: cswap --add-account",
+        every ordinary `cfuel switch` to "Re-add with: cfuel --add-account",
         which burns the stored grant of a slot whose backup is merely behind
         a locked Keychain. `session.py`'s `_bootstrap` carried a third copy.
         """
@@ -6270,11 +6270,11 @@ class ClaudeAccountSwitcher:
             )
         raise SwitchError(
             f"Account-{account_num} has no stored credentials. "
-            f"Re-add with: cswap --add-account --slot {account_num}"
+            f"Re-add with: cfuel --add-account --slot {account_num}"
         )
 
     def _refuse_session_shell(self) -> None:
-        """Refuse live-store mutation from inside a ``cswap run`` shell.
+        """Refuse live-store mutation from inside a ``cfuel run`` shell.
 
         A ``CLAUDE_CONFIG_DIR`` pointing inside a session profile means this
         shell IS a session — its "live store" is the profile, not the
@@ -6298,7 +6298,7 @@ class ClaudeAccountSwitcher:
         except ValueError:
             return
         raise SwitchError(
-            "This shell is inside a cswap run session profile "
+            "This shell is inside a cfuel run session profile "
             "(CLAUDE_CONFIG_DIR points at it). Mutating accounts here would "
             "operate on the wrong live store — unset CLAUDE_CONFIG_DIR "
             "or run from a normal shell."
@@ -6347,7 +6347,7 @@ class ClaudeAccountSwitcher:
                     "same account as both the default login and a session can make "
                     "one copy's token go stale if the server rotates it. If the "
                     "session later fails to authenticate, exit it and re-run "
-                    f"'cswap run {target_account}'."
+                    f"'cfuel run {target_account}'."
                 )
                 if emit_output:
                     warning(msg)
@@ -6413,7 +6413,7 @@ class ClaudeAccountSwitcher:
                 if not target_config:
                     raise SwitchError(
                         f"Account-{target_account} has no stored config backup. "
-                        f"Re-add with: cswap --add-account --slot {target_account}"
+                        f"Re-add with: cfuel --add-account --slot {target_account}"
                     )
                 try:
                     target_config_data = json.loads(target_config)
@@ -6642,7 +6642,7 @@ class ClaudeAccountSwitcher:
                             "credential was preserved and was not written "
                             f"into Account-{current_account}. If Account-"
                             f"{foreign_slot} later cannot authenticate, log "
-                            "in as it and run: cswap add --slot "
+                            "in as it and run: cfuel add --slot "
                             f"{foreign_slot}"
                         )
                     elif kind == "known-foreign":
@@ -6651,14 +6651,14 @@ class ClaudeAccountSwitcher:
                             "as another account's. It was preserved and not "
                             f"written into Account-{current_account}. If the "
                             "owning account later cannot authenticate, log "
-                            "in as it and run: cswap add"
+                            "in as it and run: cfuel add"
                         )
                     else:
                         msg = (
                             "The live login does not match a managed "
                             "account. It was preserved and not written into "
                             f"Account-{current_account}. If you need that "
-                            "account, log in as it and run: cswap add"
+                            "account, log in as it and run: cfuel add"
                         )
                     if emit_output:
                         warning(msg)
@@ -6695,7 +6695,7 @@ class ClaudeAccountSwitcher:
                         f"Account-{current_account}'s stored backup was "
                         "kept. If the account cannot authenticate after "
                         "switching back, log in with Claude Code and run: "
-                        "cswap add"
+                        "cfuel add"
                     )
                     if emit_output:
                         warning(msg)
@@ -6761,7 +6761,7 @@ class ClaudeAccountSwitcher:
                 if not target_config:
                     raise SwitchError(
                         f"Account-{target_account} has no stored config backup. "
-                        f"Re-add with: cswap --add-account --slot {target_account}"
+                        f"Re-add with: cfuel --add-account --slot {target_account}"
                     )
 
                 # Step 3: Activate target account - credentials
@@ -6838,7 +6838,7 @@ class ClaudeAccountSwitcher:
                 self.list_accounts()
             except Exception as e:
                 self._logger.warning(f"Post-switch usage display failed: {e!r}")
-                print(dimmed("  (usage display unavailable — run `cswap --list` to retry)"))
+                print(dimmed("  (usage display unavailable — run `cfuel --list` to retry)"))
             print()
             self._print_switch_followup()
             print()

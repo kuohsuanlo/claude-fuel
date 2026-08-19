@@ -51,7 +51,7 @@ class TestSwapAccounts:
         self, temp_home: Path, sample_sequence_data: dict
     ):
         """Sequence stays sorted, so rotation and list order follow the new
-        numbers — the accounts genuinely trade places in `cswap list`."""
+        numbers — the accounts genuinely trade places in `cfuel list`."""
         switcher = ClaudeAccountSwitcher()
         self._write(switcher, sample_sequence_data)
 

@@ -78,14 +78,14 @@ def check_for_update(current_version: str) -> str | None:
                 "pipx": f"pipx upgrade {DIST_NAME}",
             }.get(method or "")
             if direct and sys.platform != "win32":
-                # cswap upgrade actually performs the upgrade here.
-                hint = "Run `cswap upgrade` to update."
+                # cfuel upgrade actually performs the upgrade here.
+                hint = "Run `cfuel upgrade` to update."
             elif direct:
-                # Windows: cswap upgrade only prints, so point at the real command.
+                # Windows: cfuel upgrade only prints, so point at the real command.
                 hint = f"Run `{direct}` to update."
             else:
-                # Unknown install method: cswap upgrade shows manual instructions.
-                hint = "Run `cswap upgrade` for upgrade instructions."
+                # Unknown install method: cfuel upgrade shows manual instructions.
+                hint = "Run `cfuel upgrade` for upgrade instructions."
             return (
                 f"A newer version of {DIST_NAME} is available ({latest_version}). "
                 f"You are using {current_version}. {hint}"

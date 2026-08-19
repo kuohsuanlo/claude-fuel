@@ -108,7 +108,7 @@ def get_backup_root() -> Path:
     return get_legacy_backup_root()
 
 
-# Names that any prior cswap run may have created in the backup root without
+# Names that any prior cfuel run may have created in the backup root without
 # user data being present (logger output, update-check + usage cache). The
 # migration treats a target containing only these as effectively empty, since
 # wiping them loses no real state.
@@ -159,7 +159,7 @@ def migrate_legacy_backup_dir(target: Path) -> bool:
       clean the flag; just unlink it.
     * No flag, both paths exist → genuine collision, refuse — *unless* the
       target only holds throwaway artifacts (cache/, log files) that any
-      prior cswap run may have laid down before legacy reappeared (e.g.
+      prior cfuel run may have laid down before legacy reappeared (e.g.
       first run on a fresh box, then legacy synced in from another machine).
       In that case wipe the artifacts and migrate normally.
 

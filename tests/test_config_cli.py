@@ -1,4 +1,4 @@
-"""Tests for the `cswap config` subcommand (get/set/unset/list/path)."""
+"""Tests for the `cfuel config` subcommand (get/set/unset/list/path)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from claude_swap import cli
 
 
 def _run(argv: list[str], capsys) -> tuple[int, str, str]:
-    """Run `cswap config <argv>`; returns (exit_code, stdout, stderr).
+    """Run `cfuel config <argv>`; returns (exit_code, stdout, stderr).
 
     Success returns normally from main() (no sys.exit), errors raise
     SystemExit — normalize both to an exit code.
@@ -250,7 +250,7 @@ class TestConfigMisc:
         assert "config" in capsys.readouterr().out
 
     def test_auto_picks_up_configured_threshold(self, temp_home, capsys):
-        """End-to-end: a value set via config drives `cswap auto`."""
+        """End-to-end: a value set via config drives `cfuel auto`."""
         _run(["set", "autoswitch.threshold", "77"], capsys)
 
         captured = {}

@@ -846,7 +846,7 @@ class TestAdaptiveScheduler:
     def test_stale_candidate_plan_never_gates_the_active(
         self, temp_home, monkeypatch
     ):
-        # Role change outside a cswap switch (e.g. manual login): the active
+        # Role change outside a cfuel switch (e.g. manual login): the active
         # slot can carry a plan written while it was an idle candidate, up to
         # 600s out. The ACTIVE_MAX_INTERVAL_S age cap overrides it.
         h = self._harness(temp_home, monkeypatch, accounts=2)
@@ -1843,7 +1843,7 @@ class TestFreshening:
         assert any(isinstance(e, ErrorEvent) for e in h.events)
 
     def test_live_session_target_is_skipped_even_with_fresh_token(self, temp_home):
-        # Auto never activates an account that has a live `cswap run` session:
+        # Auto never activates an account that has a live `cfuel run` session:
         # dual refresh-token ownership with nobody reading the warning.
         h = EngineHarness(temp_home)
         h.seed(1, "a@example.com")
@@ -2417,7 +2417,7 @@ class TestTokenIdentity:
     def test_dead_slot_quarantined_even_with_safety_copy_present(self, harness):
         """No automatic promotion (fail-open rework of the issue #117 guard):
         a dead slot is quarantined outright; safety copies are forensic
-        material, and recovery is the documented /login + cswap add."""
+        material, and recovery is the documented /login + cfuel add."""
         harness.switcher._store._write_unclaimed_credential(
             json.dumps({"claudeAiOauth": {
                 "accessToken": "sk-2-successor",
@@ -6758,7 +6758,7 @@ class TestFreshenRoutesThroughGate:
 
         The consume lock serializes gates per slot; a loser defers. That is the
         design working, and on a machine where the collector and a manual
-        `cswap switch` overlap it happens routinely. Reporting it as "could not
+        `cfuel switch` overlap it happens routinely. Reporting it as "could not
         freshen any candidate (network?)" sends the user to check a connection
         that is fine, for a condition no network change can affect.
         """

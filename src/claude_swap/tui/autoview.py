@@ -4,7 +4,7 @@ Runs :class:`AutoSwitchEngine` in a thread worker and renders its typed
 events. Opens in **dry-run** — opening a view must never start switching
 accounts on its own; going live is an explicit, confirmed action. The
 engine's own state file semantics (shared cooldown, quarantine list, state
-lock) make it safe to run alongside an external ``cswap auto``.
+lock) make it safe to run alongside an external ``cfuel auto``.
 
 The active account's full card sits on top (same widget as the dashboard's
 panel, with the threshold tick); this screen adds the engine badge, the
@@ -255,7 +255,7 @@ class AutoScreen(Screen):
                 ConfirmModal(
                     "Go live? claude-swap will switch your active account "
                     "automatically when the threshold is reached.\n\n"
-                    "(Same behavior as running `cswap auto` in a terminal.)",
+                    "(Same behavior as running `cfuel auto` in a terminal.)",
                     title="Go live",
                     yes_label="Go live",
                 ),

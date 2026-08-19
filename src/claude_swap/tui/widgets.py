@@ -193,7 +193,7 @@ def account_card_text(
         style = palette.muted if sentinel == USAGE_API_KEY else palette.sev_warn
         marker = "·" if sentinel == USAGE_API_KEY else "⚠"
         text.append(f"{marker} {data.sentinel_label(sentinel)}", style=style)
-        # Same supplementary line `cswap list` prints: the last good
+        # Same supplementary line `cfuel list` prints: the last good
         # measurement behind the sentinel (API-key accounts have no quota to
         # have "seen").
         if sentinel != USAGE_API_KEY:

@@ -78,7 +78,7 @@ toggle that reset what you were looking at would make that impossible.
 ### The three gauges
 
 ```
-All fuel    47 pts expire within 24h    AUTO    switch at 99.7%
+All fuel    dev5 7d 28% expiring within 24h    AUTO    switch at 99.7%
                                  ▼ dev5 8/19 Wed 13:59 (4h)
   5h:     208% ≈6h   ━━━━━━━━━━━╸━━━━━━━━━━━╸╸ ────────  1 0% · 2 0% · 3 92% 3h
   7d:      47% ≈16h  ━━━╸╸╸ ──────── ─────────── ──────  1 64% 5d · 2 93% 4d · 3 96% 4h
@@ -128,8 +128,8 @@ how much fuel is left and the boundaries inside it are who holds it.
 burn  5h     0.023%/s  ·  1% every 43s
       7d     0.010%/s  ·  1% every 103s
       Fable  0.011%/s  ·  1% every 90s   suggested 99.5% (yours 99.9% — press r)
-      dev's 23 pts are all spendable before they expire
-      dev4 takes over by Sun 07:15 · its 7 pts need 40m and have 11.6h
+      dev's Fable 23% is all spendable before it expires
+      dev4 takes over by Sun 07:15 · its 7d has 7% left · needs 40m of 11.6h
 ```
 
 One rate per window, because there is no such thing as "the" burn rate — the
@@ -139,13 +139,20 @@ threshold is a decision about *how much warning you get* and the second form
 states that directly. `r` adopts the suggested threshold, which is the highest
 one the current rate can survive.
 
+**Every quantity names its limit.** There is no "point": a number on this
+screen is always a percent *of one named pool* (`7d 1%`, `Fable 23%`), because
+pools differ per window and per plan and a bare count invites adding things
+that cannot be added. When several quotas expire at once the headline counts
+the others (`+1 more`) rather than summing them — 28% of one plan plus 10% of
+another is not a number.
+
 **The last line says when the other account gets its turn.** "Nothing is more
 urgent than this one" is a true answer to a question nobody asked; the one
 people actually ask is *then when does account 2 get used*. It is answerable
 because the risk axis carries the deadline in its denominator: a candidate that
 loses today's comparison climbs on its own until it clears the hysteresis gate.
-The line pairs that instant with whether the quota survives the wait — 7 points
-needing 40 minutes with 11.6 hours of window left costs nothing, and the same
+The line pairs that instant with whether the quota survives the wait — a 7d
+with 7% left needing 40 minutes with 11.6 hours of window left costs nothing, and the same
 line turns amber when it is not. It says "by" rather than "at" on purpose: the
 estimate holds both accounts' headroom still, and spending the active one only
 brings the handover forward.
@@ -310,10 +317,10 @@ differently:
 
 | | `model=all`, always gating | Fable not actually running |
 | --- | --- | --- |
-| dev | 19 pts, risk 0.136 | 33 pts, risk 0.236 |
-| dev4 | 7 pts, risk 0.067 | 7 pts, risk 0.067 |
-| **dev5** | **0 pts, risk 0.000 — unusable** | **4 pts, risk 1.333 — highest in the fleet** |
-| kuoh | 89 pts, risk 0.602 | 89 pts, risk 0.602 |
+| dev | Fable 19% left, risk 0.136 | 7d 33% left, risk 0.236 |
+| dev4 | 7d 7% left, risk 0.067 | 7d 7% left, risk 0.067 |
+| **dev5** | **Fable 0% — unusable** | **7d 4% left, risk 1.333 — highest in the fleet** |
+| kuoh | 7d 89% left, risk 0.602 | 7d 89% left, risk 0.602 |
 
 `dev5` flips from dead to the most urgent thing on the board, on a static
 setting alone. So the burn sensor decides: a per-model window gates only while
@@ -424,7 +431,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2321 tests
+uv run pytest -q                       # 2323 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

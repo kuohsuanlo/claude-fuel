@@ -53,6 +53,12 @@ class FleetSegment:
     is_active: bool
     blocked: bool  # holds quota, but its short-term window is spent
     unknown: bool  # no readable weekly window at all
+    # WHICH LIMIT the numbers above describe ("7d", "Fable"). Carried so any
+    # message can say "7d 1%" instead of inventing a unit: a bare "1 pt" hid
+    # that it was one percent OF THE 7d POOL, which is not the same quantity
+    # as a percent of any other window — the exact mixing this screen keeps
+    # having to unlearn.
+    window: str = ""
 
     @property
     def deadline_text(self) -> str:
@@ -117,6 +123,7 @@ def segment_for(
         reset_ts=reset_ts,
         risk=waste_risk(usage, models, now),
         is_active=is_active,
+        window="" if binding is None else binding[0],
         blocked=reachable is not None and reachable <= 0,
         unknown=binding is None,
     )
@@ -155,6 +162,7 @@ def window_segment(
             reset_ts=parse_reset_ts(resets_at),
             risk=waste_risk(usage, models, now),
             is_active=is_active,
+            window=label,
             blocked=pct >= 100.0,
             unknown=False,
         )

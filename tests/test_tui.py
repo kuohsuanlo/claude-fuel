@@ -2471,6 +2471,67 @@ class TestGaugesShowOnlyWhatTheEngineReads:
 
 
 @pytest.mark.asyncio
+class TestHeadlineNamesTheLimit:
+    """"47 pts" summed percentages of different pools — a number with no unit.
+
+    Each expiring quota is named with its own limit instead: the amount is a
+    fraction OF THAT POOL, and saying which pool is all the information there
+    is."""
+
+    @staticmethod
+    def _app(tmp_path, hours_by_number):
+        import json as _json
+
+        from claude_swap.tui.app import CswapApp
+
+        def entry(seven, hours):
+            return UsageEntry(
+                last_good={
+                    "five_hour": {"pct": 0.0, "resets_at": _iso_in(3600)},
+                    "seven_day": {"pct": seven, "resets_at": _iso_in(hours * 3600)},
+                },
+                fetched_at=time.time() - 5.0,
+                age_s=5.0,
+            )
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        accounts = [
+            make_account(number, active=(number == 1), entry=entry(seven, hours))
+            for number, (seven, hours) in hours_by_number.items()
+        ]
+        return CswapApp(FakeSwitcher(accounts, tmp_path), start="fleet")
+
+    async def _headline(self, app):
+        from textual.widgets import Static
+
+        rendered = app.screen.query_one("#fleet-headline", Static).render()
+        return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+    async def test_one_expiring_quota_is_named_with_its_window(
+        self, tmp_path, fake_fleet_engine
+    ):
+        app = self._app(tmp_path, {1: (60.0, 100), 2: (72.0, 12)})
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            headline = await self._headline(app)
+        assert "user2 7d 28% expiring within 24h" in headline, headline
+        assert "pts" not in headline
+
+    async def test_more_expiring_quotas_are_counted_not_summed(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Adding 28% of one plan to 10% of another yields nothing measurable;
+        the second account is a count, never an addend."""
+        app = self._app(tmp_path, {1: (60.0, 100), 2: (72.0, 12), 3: (90.0, 20)})
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            headline = await self._headline(app)
+        assert "user2 7d 28% +1 more expiring within 24h" in headline, headline
+
+
+@pytest.mark.asyncio
 class TestHandoverNote:
     """When the account that lost this comparison gets its turn."""
 
@@ -2546,9 +2607,13 @@ class TestHandoverNote:
         )
         assert line is not None, text
         assert "user2 takes over by " in line
+        # The limit is NAMED and the amount is a percent of that pool — "7 pts"
+        # read as a count of some universal unit, which is exactly the mixing
+        # the rest of the screen had to unlearn.
+        assert "its 7d has 7% left" in line, line
         # The wait is only acceptable because the quota survives it, so the
         # line has to carry both halves of that comparison.
-        assert " pts need " in line and " and have " in line
+        assert " needs " in line and " of " in line
 
     async def test_it_is_silent_for_strategies_it_cannot_speak_for(
         self, tmp_path, fake_fleet_engine

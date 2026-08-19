@@ -740,9 +740,25 @@ class FleetScreen(Screen):
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append("All fuel", style=f"bold {palette.foreground}")
         text.append("    ")
-        at_risk = fleet.total_at_risk(segments, now, AT_RISK_HORIZON_S)
-        if at_risk > 0:
-            text.append(f"{at_risk:.0f} pts expire within 24h", style=palette.sev_crit)
+        # NAMED, NOT SUMMED. The old headline added headroom percentages
+        # across accounts into "47 pts" — but a percent is a fraction of ONE
+        # plan's pool, and pools differ, so the sum had no unit at all. Each
+        # expiring quota is named with its own limit instead.
+        expiring = sorted(
+            (
+                seg for seg in segments
+                if seg.reset_ts is not None
+                and seg.headroom_pct > 0
+                and seg.reset_ts - now <= AT_RISK_HORIZON_S
+            ),
+            key=lambda seg: seg.reset_ts or 0.0,
+        )
+        if expiring:
+            first = expiring[0]
+            lead = f"{first.label} {first.window} {first.headroom_pct:.0f}%"
+            if len(expiring) > 1:
+                lead += f" +{len(expiring) - 1} more"
+            text.append(f"{lead} expiring within 24h", style=palette.sev_crit)
         elif segments:
             text.append("nothing expiring within 24h", style=palette.sev_ok)
         else:
@@ -1281,15 +1297,19 @@ class FleetScreen(Screen):
             style=palette.foreground,
         )
         window_h = ((segment.reset_ts or now) - now) / 3600.0 - hours
+        # The limit is named because the number is a fraction OF THAT POOL.
+        # "1 pt" read as a count of some universal thing; "7d 1%" says both
+        # how much and of what, which is all the information there is.
         text.append(
-            f" · its {segment.headroom_pct:.0f} pts", style=palette.muted
+            f" · its {segment.window} has {segment.headroom_pct:.0f}% left",
+            style=palette.muted,
         )
         rate = (estimate.pct_per_s or 0.0) if estimate is not None else 0.0
         if rate > 0:
             need_h = segment.headroom_pct / (rate * 3600.0)
-            text.append(" need ", style=palette.muted)
+            text.append(" · needs ", style=palette.muted)
             text.append(_short_duration(need_h), style=palette.foreground)
-            text.append(" and have ", style=palette.muted)
+            text.append(" of ", style=palette.muted)
             # Whether the turn is long enough to finish the quota is the whole
             # reason the wait is acceptable; without it this is just a clock.
             text.append(
@@ -1327,15 +1347,15 @@ class FleetScreen(Screen):
         text = Text(no_wrap=True, overflow="ellipsis")
         if spendable >= soonest.headroom_pct:
             text.append(
-                f"{soonest.label}'s {soonest.headroom_pct:.0f} pts are all "
-                "spendable before they expire",
+                f"{soonest.label}'s {soonest.window} {soonest.headroom_pct:.0f}% "
+                "is all spendable before it expires",
                 style=palette.sev_ok,
             )
         else:
             text.append(
                 f"at this rate {soonest.label} wastes "
-                f"{soonest.headroom_pct - spendable:.0f} of its "
-                f"{soonest.headroom_pct:.0f} pts",
+                f"{soonest.headroom_pct - spendable:.0f}% of its "
+                f"{soonest.window} ({soonest.headroom_pct:.0f}% left)",
                 style=palette.sev_warn,
             )
         return text

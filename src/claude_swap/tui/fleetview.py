@@ -867,7 +867,6 @@ class FleetScreen(Screen):
         text = Text(no_wrap=True, overflow="ellipsis")
         label_width = max(len(label) for label, _ in rows)
         colour_of = self._account_colours(segments, palette)
-        gutter = 2 + label_width + 2
         # Furthest deadline first, soonest last — literally the REVERSE of the
         # colour ranking, read off the same list instead of re-sorted, so the
         # run always goes green on the left to red on the right and the two
@@ -880,9 +879,20 @@ class FleetScreen(Screen):
         for index, (label, row) in enumerate(rows):
             row = sorted(row, key=lambda s: order.get(s.number, 0))
             colours = [colour_of.get(seg.number, palette.muted) for seg in row]
-            filled, spent, edges = self._gauge(
-                row, colours, width, self._account_weights(row)
+            weights = self._account_weights(row)
+            filled, spent, edges = self._gauge(row, colours, width, weights)
+            # HOW MUCH IS IN THE TANK, so the run's length does not have to be
+            # measured by eye. Over 100% is normal and meaningful: it says the
+            # fleet holds more than one account's worth of this window.
+            head = (
+                f"  {label + ':':<{label_width + 1}} "
+                f"{fleet.remaining_tank_pct(row, weights):>4.0f}%  "
             )
+            # Marker columns come from the string that was actually drawn,
+            # never from a hand-added width. Adding this column to a
+            # hand-computed gutter would have slid every ▼ and ▲ off the
+            # segment it names, silently.
+            gutter = len(head)
             if index:
                 text.append("\n")
             # ▼ ABOVE: the account whose quota in THIS window dies first.
@@ -899,7 +909,7 @@ class FleetScreen(Screen):
                     soonest, colour_of.get(soonest.number, palette.muted), palette,
                     now, suffix="",
                 )
-            text.append(f"  {label:<{label_width}}  ", style=palette.muted)
+            text.append(head, style=palette.muted)
             text.append(filled)
             text.append(spent)
             text.append("  ")

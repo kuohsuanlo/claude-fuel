@@ -64,16 +64,25 @@ toggle that reset what you were looking at would make that impossible.
 ### The three gauges
 
 ```
-All fuel    28 pts expire within 24h    AUTO    switch at 99.7%
-                  ▼ dev5 8/19 Wed 13:59 (12h)
-  7d     ━━━━━━━━━╸━━━━━━━━━━━╸ ── ────────────  2 92% 4d · 1 58% 6d · 3 72% 12h
-                  ▲ dev 8/25 Tue 06:59 (6d) active
+All fuel    47 pts expire within 24h    AUTO    switch at 99.7%
+                           ▼ dev5 8/19 Wed 13:59 (4h)
+  5h:     208%  ━━━━━━━━━━━╸━━━━━━━━━━━╸╸ ───────────  1 0% · 2 0% · 3 92% 3h
+  7d:      47%  ━━━╸╸╸ ──────── ─────────── ──────────  1 64% 5d · 2 93% 4d · 3 96% 4h
+  Fable:   45%  ━━╸━━╸ ───────── ───────── ───────────  1 77% 5d · 2 78% 4d · 3 100% 4h
+                           ▲ dev5 8/19 Wed 13:59 (4h) active
 ```
 
 One bar per window — session (5h), weekly (7d), and your per-model weekly
 limit. Each is the **whole fleet's remaining quota for that window**, with
 every account's share packed to the left, so the length of the coloured run is
 how much fuel is left and the boundaries inside it are who holds it.
+
+- **The number in front is what is in the tank**, in units of one account's
+  window — so three untouched accounts read **300%**, not 100%. Over 100% is
+  the normal case, not an error: normalising it away would say the same thing
+  about a fleet of one and a fleet of six. It is weighted by plan size using
+  the same weights the bar is drawn with, so the figure and the length of the
+  coloured run can never state different amounts.
 
 - **Colour is an account's identity**, ranked once by **how far its weekly
   reset is from now** — furthest is green, soonest is red — and reused on all

@@ -263,6 +263,34 @@ def segment_widths(segments: Sequence[FleetSegment], width: int) -> list[int]:
     return [floor_widths[i] for i in range(len(segments))]
 
 
+def remaining_tank_pct(
+    segments: Sequence[FleetSegment], weights: Sequence[float] | None = None
+) -> float:
+    """The fleet's unspent quota for ONE window, in units of one account's
+    window — so three untouched accounts read 300%, not 100%.
+
+    Deliberately NOT normalised to the fleet. "The tank is 45% full" hides
+    whether that is half of one account or a tenth of six, and the number is
+    here to say how much work is left, not how tidy the fleet looks. Passing
+    100% is the normal case for a healthy fleet, not an error.
+
+    Weighted by plan size, using the SAME weights the gauge is drawn with, so
+    the printed number and the length of the coloured run can never state
+    different amounts — the failure mode this screen has already hit twice.
+    With equal weights it collapses to the plain sum of each account's
+    remaining points, which is the unit the headline already counts in.
+    """
+    if not segments:
+        return 0.0
+    if not weights or len(weights) != len(segments):
+        weights = [1.0] * len(segments)
+    total = sum(weights)
+    if total <= 0:
+        return 0.0
+    weighted = sum(seg.headroom_pct * w for seg, w in zip(segments, weights))
+    return len(segments) * weighted / total
+
+
 def total_at_risk(segments: Sequence[FleetSegment], now: float, horizon_s: float) -> float:
     """Weekly points across the fleet that expire within ``horizon_s``.
 

@@ -10,6 +10,7 @@ from claude_swap.fleet import (
     FleetSegment,
     burn_head,
     order_segments,
+    remaining_tank_pct,
     segment_for,
     segment_widths,
     total_at_risk,
@@ -257,3 +258,41 @@ class TestBurnHead:
         active_calm = _seg("1", hours=150, active=True)
         urgent = _seg("2", hours=5)
         assert burn_head([active_calm, urgent]).number == "2"
+
+
+class TestRemainingTankPct:
+    """How much fuel is in the tank, in units of ONE account's window."""
+
+    def test_three_untouched_accounts_read_three_hundred(self):
+        """Over 100% is the point, not a bug: a fleet holds more than one
+        account's worth of a window, and normalising that away hides whether
+        45% is half of one account or a tenth of six."""
+        segs = [_seg("1", 100.0), _seg("2", 100.0), _seg("3", 100.0)]
+        assert remaining_tank_pct(segs) == pytest.approx(300.0)
+
+    def test_equal_weights_collapse_to_the_plain_points_sum(self):
+        """The unit the headline already counts in, so the two agree."""
+        segs = [_seg("1", 36.0), _seg("2", 7.0), _seg("3", 4.0)]
+        assert remaining_tank_pct(segs) == pytest.approx(47.0)
+        assert remaining_tank_pct(segs, [1.0, 1.0, 1.0]) == pytest.approx(47.0)
+
+    def test_plan_size_is_honoured(self):
+        """A 20x account's remaining 50% is four times a 5x account's, and the
+        gauge already draws it that way — the number has to agree or the two
+        state different amounts of the same thing."""
+        segs = [_seg("1", 100.0), _seg("2", 0.0)]
+        assert remaining_tank_pct(segs, [20.0, 5.0]) == pytest.approx(160.0)
+        assert remaining_tank_pct(segs, [5.0, 20.0]) == pytest.approx(40.0)
+
+    def test_an_exhausted_fleet_is_zero_not_missing(self):
+        assert remaining_tank_pct([_seg("1", 0.0), _seg("2", 0.0)]) == 0.0
+
+    def test_no_segments_is_zero_rather_than_a_crash(self):
+        assert remaining_tank_pct([]) == 0.0
+
+    def test_mismatched_or_degenerate_weights_fall_back_to_equal(self):
+        """Defensive: the weights come from a different function, and a bar
+        that renders is worth more than a stack trace about their length."""
+        segs = [_seg("1", 40.0), _seg("2", 60.0)]
+        assert remaining_tank_pct(segs, [1.0]) == pytest.approx(100.0)
+        assert remaining_tank_pct(segs, [0.0, 0.0]) == 0.0

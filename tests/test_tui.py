@@ -2365,6 +2365,104 @@ class TestGaugesShowOnlyWhatTheEngineReads:
 
 
 @pytest.mark.asyncio
+class TestTheTankReading:
+    """The number in front of each bar: how much fuel the fleet holds."""
+
+    @staticmethod
+    def _fleet(tmp_path):
+        import json as _json
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        return FakeSwitcher(
+            [
+                make_account(
+                    1, entry=make_entry(0.0, 64.0, scoped=[("Fable", 77.0)])
+                ),
+                make_account(
+                    2, entry=make_entry(0.0, 93.0, scoped=[("Fable", 78.0)])
+                ),
+                make_account(
+                    3, active=True,
+                    entry=make_entry(92.0, 96.0, scoped=[("Fable", 100.0)]),
+                ),
+            ],
+            tmp_path,
+        )
+
+    async def _bars(self, tmp_path, size=(140, 46)):
+        from textual.widgets import Static
+
+        from claude_swap.tui.app import CswapApp
+
+        app = CswapApp(self._fleet(tmp_path), start="fleet")
+        async with app.run_test(size=size) as pilot:
+            await settle(pilot)
+            rendered = app.screen.query_one("#fleet-bars", Static).render()
+            return (
+                rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            ).split("\n")
+
+    async def test_the_tank_can_read_over_one_hundred_percent(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Two idle accounts and one at 92% hold 208% of a 5-hour window
+        between them. Clamping that to 100 would say the same thing about a
+        fleet of one and a fleet of six."""
+        import re
+
+        lines = await self._bars(tmp_path)
+        session = next(line for line in lines if line.lstrip().startswith("5h:"))
+        assert re.match(r"\s+5h:\s+208%\s+[━╸╌]", session), session
+
+    async def test_every_row_states_its_own_remaining_points(
+        self, tmp_path, fake_fleet_engine
+    ):
+        import re
+
+        lines = await self._bars(tmp_path)
+        found = {}
+        for line in lines:
+            match = re.match(r"\s+(\S+):\s+(\d+)%\s+[━╸╌─]", line)
+            if match:
+                found[match.group(1)] = int(match.group(2))
+        # 7d: (100-64) + (100-93) + (100-96);  Fable: 23 + 22 + 0
+        assert found == {"5h": 208, "7d": 47, "Fable": 45}, found
+
+    async def test_the_markers_still_point_into_the_gauge(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """The tank reading widened the label column.
+
+        Marker columns are derived from the string that is actually drawn
+        rather than a hand-added width, because getting this wrong is silent:
+        every ▼ and ▲ still renders, just above the wrong segment — or above
+        the label, naming an account the reader is not looking at.
+        """
+        lines = await self._bars(tmp_path)
+        glyphs = set("━╸╌─┃")
+        checked = 0
+        for index, line in enumerate(lines):
+            glyph = next((g for g in ("▼", "▲") if g in line), None)
+            if glyph is None:
+                continue
+            column = line.index(glyph)
+            neighbours = [
+                lines[j] for j in (index - 1, index + 1) if 0 <= j < len(lines)
+            ]
+            bar = next((b for b in neighbours if "━" in b), None)
+            assert bar is not None, "a marker with no gauge beside it"
+            assert column < len(bar), f"marker at {column} is past the bar"
+            assert bar[column] in glyphs, (
+                f"marker at column {column} sits above {bar[column]!r}, "
+                "which is not part of the gauge"
+            )
+            checked += 1
+        assert checked >= 3, f"only {checked} markers were checked"
+
+
+@pytest.mark.asyncio
 class TestBarColoursAndMarkers:
     """Colour is an account's identity; the markers answer two questions."""
 

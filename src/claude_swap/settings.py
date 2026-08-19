@@ -94,7 +94,7 @@ class AutoSwitchSettings:
     # Percentage points always held back by the burst guard, on top of what
     # the measured rate asks for. A rate of zero is a statement about the last
     # minute, not the next one, so the reserve never goes below this.
-    burst_floor_pct: float = 0.5
+    burst_floor_pct: float = 1.0
 
 
 @dataclass(frozen=True)

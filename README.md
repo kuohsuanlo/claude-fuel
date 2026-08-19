@@ -264,9 +264,13 @@ the last minute, not a promise about the next one, and the moment before a
 heavy turn starts is exactly when the reserve matters. An idle machine
 previously recommended the ceiling and defended nothing.
 
+One point is the default because a point is the API's own resolution — it
+reports integer percentages, so a finer reserve holds back less than the
+smallest change the endpoint can report.
+
 ```bash
 cfuel config set autoswitch.burstGuard false     # off
-cfuel config set autoswitch.burstFloorPct 1      # always hold back 1 point
+cfuel config set autoswitch.burstFloorPct 2      # hold back more than the default 1
 ```
 
 ### Tokens are not percent, so the scale is measured
@@ -428,7 +432,7 @@ Linux). `cfuel config` lists everything; the keys this fork adds:
 | --- | --- | --- |
 | `autoswitch.strategy` | `waste-first` | `waste-first`, `consume-first`, `best` |
 | `autoswitch.burstGuard` | `true` | Let the measured rate trigger early |
-| `autoswitch.burstFloorPct` | `0.5` | Points always reserved, added to the measured rate |
+| `autoswitch.burstFloorPct` | `1` | Points always reserved, added to the measured rate |
 | `autoswitch.accountWeights` | — | Relative plan sizes, `1=20,2=5` |
 | `autoswitch.model` | `all` | Per-model weekly limits that gate a switch; `none` to ignore |
 | `autoswitch.measuredModelMix` | `true` | Gate on a model's limit only while that model is running |

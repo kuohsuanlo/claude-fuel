@@ -105,7 +105,12 @@ BURST_WINDOW_S = 60.0
 # statement about the last minute, not a promise about the next one — and the
 # first heavy turn after an idle spell is exactly when the reserve is needed.
 # Without it an idle machine recommended the ceiling and defended nothing.
-BURST_FLOOR_PCT = 0.5
+#
+# One point, not a half: a point is the API's own resolution (it reports
+# integer percentages), so anything finer reserves less than the smallest
+# change the endpoint can even report. Overshoot costs a hard rate-limit
+# mid-turn; a threshold one point low costs one earlier switch.
+BURST_FLOOR_PCT = 1.0
 
 # Bounds for the recommendation, matching settings.json's own threshold range
 # so the advice is always a value the user could actually set.

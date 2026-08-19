@@ -247,11 +247,26 @@ So the burn rate is measured locally instead, from Claude Code's own transcripts
 (`~/.claude/projects/**/*.jsonl`), which carry each request's token counts and
 cost nothing to read. Every session on the machine is watched, not just the one
 you launched `cfuel` from. The effective trigger becomes the lower of your
-threshold and the value the current rate can survive — by default a burst of 2×
-for 10 seconds. **It can only ever switch earlier than you asked.**
+threshold and the value the current rate can survive. **It can only ever switch
+earlier than you asked.**
+
+**The reserve is a full engine tick, plus a floor.** The window is not a guess
+at how long a switch takes — every tick may fetch usage, and that endpoint
+admits ~28–30 requests an hour per identity (it costs no tokens; the limit is
+rate, and blowing it means having *no* usage data for up to an hour). So the
+loop cannot run every second, and the tick interval **is** the exposure.
+Reserving 10 seconds while ticking every 60 left five sixths of the gap
+uncovered, and a live agent was cut off through it at 0.062 %/s — 3.7 points a
+minute against a 0.6-point reserve.
+
+The floor applies to an idle reading too: zero measured is a statement about
+the last minute, not a promise about the next one, and the moment before a
+heavy turn starts is exactly when the reserve matters. An idle machine
+previously recommended the ceiling and defended nothing.
 
 ```bash
-cfuel config set autoswitch.burstGuard false   # off
+cfuel config set autoswitch.burstGuard false     # off
+cfuel config set autoswitch.burstFloorPct 1      # always hold back 1 point
 ```
 
 ### Tokens are not percent, so the scale is measured
@@ -413,6 +428,7 @@ Linux). `cfuel config` lists everything; the keys this fork adds:
 | --- | --- | --- |
 | `autoswitch.strategy` | `waste-first` | `waste-first`, `consume-first`, `best` |
 | `autoswitch.burstGuard` | `true` | Let the measured rate trigger early |
+| `autoswitch.burstFloorPct` | `0.5` | Points always reserved, added to the measured rate |
 | `autoswitch.accountWeights` | — | Relative plan sizes, `1=20,2=5` |
 | `autoswitch.model` | `all` | Per-model weekly limits that gate a switch; `none` to ignore |
 | `autoswitch.measuredModelMix` | `true` | Gate on a model's limit only while that model is running |
@@ -431,7 +447,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2323 tests
+uv run pytest -q                       # 2325 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

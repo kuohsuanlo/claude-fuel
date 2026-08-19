@@ -45,6 +45,7 @@ from typing import ClassVar
 from claude_swap import oauth, poll_policy
 from claude_swap.burn import (
     ACCOUNT_WIDE_WINDOWS,
+    BURST_FLOOR_PCT,
     BurnTracker,
     TranscriptBurnSensor,
     burning_models,
@@ -1144,7 +1145,9 @@ class AutoSwitchEngine:
             binding = max(windows, key=lambda w: w[1])[0] if windows else None
             recommended = self._burn.estimate(
                 current, binding
-            ).recommended_threshold()
+            ).recommended_threshold(
+                floor_pct=getattr(settings, "burst_floor_pct", BURST_FLOOR_PCT)
+            )
         except Exception:  # pragma: no cover - sensing must never break a tick
             return settings.threshold
         if recommended is None:

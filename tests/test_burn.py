@@ -10,6 +10,7 @@ import pytest
 
 from claude_swap import burn
 from claude_swap.burn import (
+    BURST_FLOOR_PCT,
     BURST_MULTIPLIER,
     BURST_WINDOW_S,
     BurnEstimate,
@@ -307,10 +308,33 @@ class TestEstimateMath:
         fast = BurnEstimate(pct_per_s=0.5).recommended_threshold()
         assert fast < slow
 
-    def test_idle_recommends_the_ceiling_not_one_hundred(self):
+    def test_idle_still_reserves_the_floor(self):
+        """Zero measured is a statement about the last minute, not a promise
+        about the next one — and the first heavy turn after an idle spell is
+        exactly when the reserve is needed. Returning the ceiling there
+        defended nothing: a real agent sat at 96% with "suggested 99.9%" and
+        then hit a hard limit."""
         assert BurnEstimate(pct_per_s=0.0).recommended_threshold() == pytest.approx(
-            99.9
+            100.0 - BURST_FLOOR_PCT
         )
+
+    def test_the_reserve_covers_a_whole_engine_tick(self):
+        """The window is the engine's interval, not a guess at switch latency:
+        every tick may fetch usage and the endpoint's budget forbids running
+        one a second, so the interval IS the exposure."""
+        rate = 0.062  # measured on the live fleet when an agent was cut off
+        assert BurnEstimate(pct_per_s=rate).recommended_threshold() == pytest.approx(
+            round(100.0 - rate * BURST_MULTIPLIER * BURST_WINDOW_S, 1)
+        )
+        assert BURST_WINDOW_S >= 60.0, "must cover a default tick"
+
+    def test_the_floor_is_configurable_and_adds_to_the_rate(self):
+        """"1% means the rate calculation plus 1%"."""
+        est = BurnEstimate(pct_per_s=0.01)
+        assert est.recommended_threshold(floor_pct=1.0) == pytest.approx(99.0)
+        # Once the rate asks for more than the floor, the rate wins.
+        fast = BurnEstimate(pct_per_s=0.05)
+        assert fast.recommended_threshold(floor_pct=1.0) == pytest.approx(97.0)
 
     def test_recommendation_is_floored_at_the_settable_minimum(self):
         assert BurnEstimate(pct_per_s=99.0).recommended_threshold() == pytest.approx(

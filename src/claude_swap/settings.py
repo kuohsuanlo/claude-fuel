@@ -91,6 +91,10 @@ class AutoSwitchSettings:
     # of declared. An idle MACHINE changes nothing: no traffic at all is the
     # absence of evidence, not evidence of a mix.
     measured_model_mix: bool = True
+    # Percentage points always held back by the burst guard, on top of what
+    # the measured rate asks for. A rate of zero is a statement about the last
+    # minute, not the next one, so the reserve never goes below this.
+    burst_floor_pct: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -180,6 +184,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "measuredModelMix", "measured_model_mix", "bool",
             help="Only gate on a model's weekly limit while that model is running",
+        ),
+        SettingSpec(
+            "autoswitch", "burstFloorPct", "burst_floor_pct", "float", 0.0, 25.0,
+            help="Points the burst guard always reserves, added to the measured rate",
         ),
         SettingSpec(
             "ui", "theme", "theme", "choice", choices=("dark", "light", "auto"),

@@ -33,6 +33,7 @@ from textual.widgets import Footer, Static
 
 from claude_swap import fleet, oauth
 from claude_swap.autoswitch import AutoSwitchEngine, AutoSwitchEvent, pct_label
+from claude_swap import burn as burn_mod
 from claude_swap.burn import BurnTracker, TranscriptBurnSensor
 from claude_swap.models import AccountsSnapshot
 from claude_swap.settings import (
@@ -1210,7 +1211,13 @@ class FleetScreen(Screen):
             if not estimate.calibrated:
                 text.append("  ·  API average", style=palette.muted)
             if name == binding and self._settings is not None:
-                recommended = estimate.recommended_threshold()
+                recommended = estimate.recommended_threshold(
+                    floor_pct=getattr(
+                        self._settings, "burst_floor_pct", burn_mod.BURST_FLOOR_PCT
+                    )
+                    if self._settings is not None
+                    else burn_mod.BURST_FLOOR_PCT
+                )
                 if recommended is not None:
                     text.append("   suggested ", style=palette.muted)
                     good = recommended >= self._settings.threshold

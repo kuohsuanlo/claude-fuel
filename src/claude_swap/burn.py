@@ -89,13 +89,23 @@ _CALIBRATION_SAMPLES = 24
 
 # Burst allowance behind ``recommended_threshold``. The recommendation answers
 # "where must the trigger sit so that a sudden burst still lands inside the
-# window?" — assume the burn can jump to BURST_MULTIPLIER times the observed
-# rate and hold it for BURST_WINDOW_S while the switch is detected and
-# performed. 2.0x for 10s is deliberately generous: overshoot costs a hard
-# rate-limit mid-turn, while a threshold a few points low costs nothing but
-# an earlier switch.
-BURST_MULTIPLIER = 2.0
-BURST_WINDOW_S = 10.0
+# window?" — assume the burn holds BURST_MULTIPLIER times the observed rate
+# for BURST_WINDOW_S while the switch is detected and performed.
+#
+# THE WINDOW IS A FULL ENGINE TICK, not a guess at switch latency. Every tick
+# may fetch usage, and the endpoint's budget is ~28-30 requests an hour, so
+# the loop cannot run every second: the interval IS the exposure. Reserving
+# 10s while ticking every 60s left five sixths of the gap uncovered, and a
+# real agent hit a hard limit through it at 0.062 %/s — 3.7 points a minute
+# against a 0.6-point reserve.
+BURST_MULTIPLIER = 1.0
+BURST_WINDOW_S = 60.0
+
+# Floor under the reserve, in percentage points. A measured rate of zero is a
+# statement about the last minute, not a promise about the next one — and the
+# first heavy turn after an idle spell is exactly when the reserve is needed.
+# Without it an idle machine recommended the ceiling and defended nothing.
+BURST_FLOOR_PCT = 0.5
 
 # Bounds for the recommendation, matching settings.json's own threshold range
 # so the advice is always a value the user could actually set.
@@ -518,21 +528,25 @@ class BurnEstimate:
         *,
         burst_multiplier: float = BURST_MULTIPLIER,
         burst_window_s: float = BURST_WINDOW_S,
+        floor_pct: float = BURST_FLOOR_PCT,
     ) -> float | None:
         """Highest trigger that still survives a burst, or None if unknown.
 
-        The margin is what a burst could spend before a switch completes:
-        ``rate x multiplier x window``. At the defaults a run burning 0.05
-        %/s (one point every 20s) reserves one point and recommends 99;
-        a run burning 0.5 %/s reserves ten and recommends 90.
+        The margin is what the burn could spend before the next tick can act:
+        ``rate x multiplier x window``, never less than ``floor_pct``. At the
+        defaults a run burning 0.05 %/s (one point every 20s) reserves three
+        points and recommends 97; one burning 0.5 %/s reserves thirty.
 
-        An idle machine gets the ceiling rather than 100: a zero-rate reading
-        is a statement about the last minute, not a promise about the next
-        one, and the ceiling is where settings.json already stops.
+        THE FLOOR APPLIES TO AN IDLE READING TOO. Zero measured is not a
+        promise of zero next minute, and returning the ceiling there defended
+        nothing at exactly the moment before a heavy turn starts.
         """
         if self.pct_per_s is None:
             return None
-        margin = max(0.0, self.pct_per_s) * burst_multiplier * burst_window_s
+        margin = max(
+            floor_pct,
+            max(0.0, self.pct_per_s) * burst_multiplier * burst_window_s,
+        )
         # Rounded to a tenth, which is the resolution settings.json accepts.
         # Unrounded it renders as "99.86597411%" — ten significant digits of a
         # measurement whose inputs are a 60-second sample and an integer

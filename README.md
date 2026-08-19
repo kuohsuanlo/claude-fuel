@@ -334,6 +334,15 @@ gates on a model the moment it is **selected**, before anything is spent. A
 model that is *running* gates whatever the setting says, which covers a
 session started with its own `--model`. Either is enough; the two are unioned.
 
+**A limit that becomes relevant is not waited on.** The engine's cadence is
+tied to the usage endpoint's budget — about one fetch a minute — but noticing
+that a model started running costs no API call at all: the settings file and
+the transcripts are local and the percentages are already cached, so the extra
+tick is served from the store. The screen therefore wakes the engine the second
+a window starts gating, which turns "up to a minute on an account that cannot
+serve the work" into about a second. Only on that edge: a window that *stops*
+gating breaks nothing by being noticed late.
+
 **A window that is not gating keeps its bar**, marked `not running`. It still
 holds quota and that quota still expires — it simply is not what will stop you
 right now. Deleting the row said something much stronger, and read as the tool
@@ -407,7 +416,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2310 tests
+uv run pytest -q                       # 2313 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

@@ -167,6 +167,9 @@ class FleetScreen(Screen):
         # screen with no moving part looks identical to a wedged one.
         self._show_log = True
         self._ticks = 0
+        # The gating set as of the last display tick, so a WIDENING can be
+        # spotted the second it happens. None until the first tick.
+        self._gating_seen: frozenset[str] | None = None
 
     def compose(self) -> ComposeResult:
         # The pet sits in its own column on the RIGHT. Below the gauges it
@@ -601,6 +604,28 @@ class FleetScreen(Screen):
         by a repaint — only by time passing."""
         return int(time.monotonic() / SPRITE_FRAME_S)
 
+    def _wake_engine_if_a_limit_became_relevant(self) -> None:
+        """Tick the engine NOW when a per-model window starts gating.
+
+        The engine's cadence is tied to the API budget — about one usage fetch
+        a minute — but noticing that a model started running costs no API call
+        at all: the settings file and the transcripts are local and the
+        percentages are already cached, so an extra tick is served from the
+        store. The DECISION can therefore run at display cadence even though
+        the FETCH cannot, which turns "up to a minute on an account that
+        cannot serve the work" into about a second.
+
+        Only ever on WIDENING. A window that stopped gating breaks nothing by
+        being noticed late; one that started gating is exactly the case where
+        the active account may already be unusable.
+        """
+        gating = frozenset(self._models())
+        previous, self._gating_seen = self._gating_seen, gating
+        if previous is None or self._engine is None:
+            return
+        if gating - previous:
+            self._engine.wake()
+
     def _frame_tick(self) -> None:
         """Every frame: repaint the pet. Every Nth: recompute the gauges too."""
         if not self.is_attached:
@@ -692,6 +717,7 @@ class FleetScreen(Screen):
             return
         now = time.time()
         palette = Palette.from_theme(self.app.current_theme)
+        self._wake_engine_if_a_limit_became_relevant()
         segments = self._segments(now)
         self._render_headline(segments, now, palette)
         self._render_status(palette)

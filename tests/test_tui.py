@@ -2313,6 +2313,82 @@ class TestPetNeverWraps:
 
 
 @pytest.mark.asyncio
+class TestALimitBecomingRelevantIsNotWaitedOn:
+    """The decision runs at display cadence even though the fetch cannot."""
+
+    @staticmethod
+    def _app(tmp_path):
+        import json as _json
+
+        from claude_swap.tui.app import CswapApp
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        return CswapApp(
+            FakeSwitcher(
+                [make_account(1, active=True, entry=make_entry(5.0, 40.0,
+                                                              scoped=[("Fable", 100.0)]))],
+                tmp_path,
+            ),
+            start="fleet",
+        )
+
+    async def test_the_engine_is_woken_when_a_window_starts_gating(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """The engine sleeps on the API budget — about a minute. A model that
+        just started running makes the active account unusable NOW, and that
+        fact is entirely local: settings file, transcripts, cached percents."""
+        from unittest.mock import MagicMock, patch as _patch
+
+        app = self._app(tmp_path)
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            screen._engine = MagicMock()
+            with _patch.object(type(screen), "_models", return_value=()):
+                screen._display_tick()          # establish the baseline
+            screen._engine.wake.assert_not_called()
+            with _patch.object(type(screen), "_models", return_value=("Fable",)):
+                screen._display_tick()          # Fable just became relevant
+            screen._engine.wake.assert_called_once()
+
+    async def test_a_window_that_stops_gating_does_not_wake_anything(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Nothing breaks by noticing that late, and waking on both edges
+        would tick the engine every time a model went quiet."""
+        from unittest.mock import MagicMock, patch as _patch
+
+        app = self._app(tmp_path)
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            screen._engine = MagicMock()
+            with _patch.object(type(screen), "_models", return_value=("Fable",)):
+                screen._display_tick()
+            with _patch.object(type(screen), "_models", return_value=()):
+                screen._display_tick()
+            screen._engine.wake.assert_not_called()
+
+    async def test_a_steady_set_never_wakes_it(
+        self, tmp_path, fake_fleet_engine
+    ):
+        from unittest.mock import MagicMock, patch as _patch
+
+        app = self._app(tmp_path)
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            screen = app.screen
+            screen._engine = MagicMock()
+            with _patch.object(type(screen), "_models", return_value=("Fable",)):
+                for _ in range(5):
+                    screen._display_tick()
+            screen._engine.wake.assert_not_called()
+
+
+@pytest.mark.asyncio
 class TestGaugesShowOnlyWhatTheEngineReads:
     """A bar the decision cannot see is worse than no bar at all."""
 

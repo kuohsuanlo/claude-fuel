@@ -287,9 +287,35 @@ class FleetScreen(Screen):
             pass
 
     def _models(self) -> tuple[str, ...]:
+        """The per-model windows that GATE right now — the engine's own set.
+
+        Narrowed by measurement exactly as the engine narrows it, because a
+        gauge drawn from a wider list than the decision reads is a gauge
+        showing fuel nothing will ever act on.
+        """
+        from claude_swap.burn import ACCOUNT_WIDE_WINDOWS, burning_models
         from claude_swap.settings import parse_model_names
 
-        return parse_model_names(self._settings.model if self._settings else None)
+        declared = parse_model_names(self._settings.model if self._settings else None)
+        snapshot = self.app.snapshot
+        if (
+            not declared
+            or self._sensor is None
+            or snapshot is None
+            or not getattr(self._settings, "measured_model_mix", True)
+        ):
+            return declared
+        reported: list[str] = []
+        for account in snapshot.accounts:
+            for name, _pct, _reset in oauth.relevant_windows(
+                account.usage.last_good, ("all",)
+            ):
+                if name not in ACCOUNT_WIDE_WINDOWS and name not in reported:
+                    reported.append(name)
+        if not reported:
+            return declared
+        live = burning_models(self._sensor, declared, reported)
+        return declared if live is None else live
 
     # -- engine -------------------------------------------------------------
 

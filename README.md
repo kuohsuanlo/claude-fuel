@@ -296,6 +296,39 @@ cfuel config set autoswitch.model Fable,Opus  # only these
 `none` is a word rather than a blank because the load-time clamp turns any
 empty or non-string value back into the default.
 
+**And which of them gates is measured, not declared.** A static list says "all
+my work needs Fable". When it does not, the same fleet reads completely
+differently:
+
+| | `model=all`, always gating | Fable not actually running |
+| --- | --- | --- |
+| dev | 19 pts, risk 0.136 | 33 pts, risk 0.236 |
+| dev4 | 7 pts, risk 0.067 | 7 pts, risk 0.067 |
+| **dev5** | **0 pts, risk 0.000 — unusable** | **4 pts, risk 1.333 — highest in the fleet** |
+| kuoh | 89 pts, risk 0.602 | 89 pts, risk 0.602 |
+
+`dev5` flips from dead to the most urgent thing on the board, on a static
+setting alone. So the burn sensor decides: a per-model window gates only while
+that model has produced traffic in the trailing half hour, and starts gating
+again the moment it runs.
+
+That required the sensor to actually measure per model, which it did not:
+`pct_per_s` was the machine's TOTAL token rate times a per-window constant, so
+a Fable window "burned" at a fixed share of Opus work, and the constant itself
+had the calibration-time model mix baked into it. Transcripts record
+`message.model`, so both the rate and the calibration are now filtered to the
+window's own traffic. Stored v1 constants are dropped rather than reused —
+there is no way to unmix a model share back out of them.
+
+**An idle machine relaxes nothing.** "You are running Opus, not Fable" and "you
+are running nothing" look identical in the token stream and mean opposite
+things; the first is a measurement, the second is the absence of one. With no
+traffic at all, every declared window keeps gating.
+
+```bash
+cfuel config set autoswitch.measuredModelMix false   # always gate on the declared list
+```
+
 The same list now feeds the screen. The model gauge used to be built from a
 hardcoded `all` while the ranking read the setting, which is how a Fable bar
 at 100% came to sit above an engine that could not see it — the one thing a
@@ -344,6 +377,7 @@ Linux). `cfuel config` lists everything; the keys this fork adds:
 | `autoswitch.burstGuard` | `true` | Let the measured rate trigger early |
 | `autoswitch.accountWeights` | — | Relative plan sizes, `1=20,2=5` |
 | `autoswitch.model` | `all` | Per-model weekly limits that gate a switch; `none` to ignore |
+| `autoswitch.measuredModelMix` | `true` | Gate on a model's limit only while that model is running |
 
 The threshold you set with `t` in the TUI is written here too, so it survives a
 restart.
@@ -359,7 +393,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2284 tests
+uv run pytest -q                       # 2300 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

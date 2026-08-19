@@ -2045,7 +2045,11 @@ class TestWasteProjectionUnits:
             # be spent in the three days it has left.
             tracker._calibration["1\x005h"] = collections.deque([(100.0, 1000.0)])
             tracker._calibration["1\x007d"] = collections.deque([(1.0, 1_000_000.0)])
-            app.screen._sensor._samples.append((time.time(), 1000.0))
+            # (ts, weighted, model): a scoped window is measured on its own
+            # model's traffic, so a sample has to say which model it was.
+            app.screen._sensor._samples.append(
+                (time.time(), 1000.0, "claude-fable-5")
+            )
             app.screen._display_tick()
             text = self._text(app)
             assert "wastes" in text, (

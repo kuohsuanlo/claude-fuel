@@ -85,6 +85,12 @@ class AutoSwitchSettings:
     # read 95%, so the engine saw headroom where the model had none, and the
     # screen drew a Fable bar the decision could not see.
     model: str | None = "all"
+    # Let the burn sensor decide WHICH of those windows actually gate right
+    # now. A per-model window stops gating while its model is idle and starts
+    # again the moment it runs, so "which models do I use" is measured instead
+    # of declared. An idle MACHINE changes nothing: no traffic at all is the
+    # absence of evidence, not evidence of a mix.
+    measured_model_mix: bool = True
 
 
 @dataclass(frozen=True)
@@ -170,6 +176,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "model", "model", "string",
             help="Models whose weekly limits also gate a switch (all, none, or e.g. Fable)",
+        ),
+        SettingSpec(
+            "autoswitch", "measuredModelMix", "measured_model_mix", "bool",
+            help="Only gate on a model's weekly limit while that model is running",
         ),
         SettingSpec(
             "ui", "theme", "theme", "choice", choices=("dark", "light", "auto"),

@@ -43,7 +43,12 @@ from pathlib import Path
 from typing import ClassVar
 
 from claude_swap import oauth, poll_policy
-from claude_swap.burn import BurnTracker, TranscriptBurnSensor
+from claude_swap.burn import (
+    ACCOUNT_WIDE_WINDOWS,
+    BurnTracker,
+    TranscriptBurnSensor,
+    burning_models,
+)
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
 from claude_swap.locking import FileLock
@@ -780,7 +785,11 @@ class AutoSwitchEngine:
         # separated list ("Fable", "Opus,Sonnet", "all"); parse once here and
         # pass everywhere usage windows are read — decisions, cadence, and
         # reset scheduling must all see the same axes.
-        self._models = parse_model_names(settings.model)
+        # DECLARED vs GATING. The declared list is what the user asked to
+        # care about; `self._models` is the subset gating this tick, which the
+        # burn sensor narrows to the models actually running.
+        self._declared_models = parse_model_names(settings.model)
+        self._models = self._declared_models
         # Poll plans written by the collector must key on the same threshold/
         # models the engine decides with (CLI overrides included), not on
         # whatever the settings file happens to say.
@@ -818,12 +827,49 @@ class AutoSwitchEngine:
         # One-shot typo guard for ``autoswitch.model``: resolved (and possibly
         # warned) on the first tick where every relevant account has readable
         # usage — adaptive polling legitimately leaves gaps before that.
-        self._model_check_done = not self._models
+        self._model_check_done = not self._declared_models
 
     # -- state file ---------------------------------------------------------
 
     def _state_lock(self) -> FileLock:
         return FileLock(self.state_path.parent / ".autoswitch_state.lock")
+
+    def _refresh_gating_models(self, settings, usage: dict) -> bool:
+        """Narrow the declared model list to the ones actually being spent.
+
+        Returns whether the set changed, because the caller has to recompute
+        headroom when it does.
+
+        A per-model window only stops the work if the work uses that model.
+        Treating the declared list as always-binding read an account holding
+        Fable at 100% as having no quota at all: on a live fleet that scored
+        an account with 4 points left and the highest waste risk on the board
+        as 0.000 and unusable.
+        """
+        if (
+            self._burn is None
+            or not self._declared_models
+            or not getattr(settings, "measured_model_mix", True)
+        ):
+            return False
+        # EVERY account's scoped windows, not just the active one's. "all"
+        # expands per account, so narrowing it to the names the current
+        # account happens to report would stop gating on a model another
+        # account has — and the engine would move onto quota it cannot use.
+        reported: list[str] = []
+        for value in usage.values():
+            for name, _pct, _reset in oauth.relevant_windows(
+                value if isinstance(value, dict) else None, ("all",)
+            ):
+                if name not in ACCOUNT_WIDE_WINDOWS and name not in reported:
+                    reported.append(name)
+        if not reported:
+            return False
+        models = burning_models(self._burn.sensor, self._declared_models, reported)
+        if models is None or models == self._models:
+            return False
+        self._models = models
+        return True
 
     def _read_state(self) -> dict:
         try:
@@ -1166,6 +1212,12 @@ class AutoSwitchEngine:
         entries, usage, headroom = self._collect_scheduled_usage(
             current, quarantined, threshold=settings.threshold
         )
+        # WHICH PER-MODEL WINDOWS GATE THIS TICK — measured, not declared.
+        # Refreshed before anything reads self._models, and headroom recomputed
+        # with it, so the reachability test and the ranking never disagree
+        # about which windows exist.
+        if self._refresh_gating_models(settings, usage):
+            headroom = _headroom_by_account(usage, self._models)
         # Computed before the poll event so the line the user reads names the
         # number the decision below actually uses. Reporting the configured
         # threshold while triggering on a lower one is the kind of quiet

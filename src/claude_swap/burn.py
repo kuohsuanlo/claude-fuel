@@ -41,6 +41,7 @@ import json
 import os
 import time
 from collections import deque
+from collections.abc import Sequence
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,90 @@ BURST_WINDOW_S = 10.0
 # so the advice is always a value the user could actually set.
 _THRESHOLD_LO = 50.0
 _THRESHOLD_HI = 99.9
+
+
+#: Windows every request counts against, whatever model produced it. Anything
+#: else the API reports is a per-model ("scoped") window, and only that model's
+#: requests move it.
+ACCOUNT_WIDE_WINDOWS = ("5h", "7d")
+
+#: Bumped when a stored constant would mean something different. v1 divided
+#: a scoped window's percent by the machine's total tokens.
+_CALIBRATION_SCHEMA = 2
+
+
+def window_model_filter(window: str | None) -> str | None:
+    """The model name a window is scoped to, or ``None`` for account-wide.
+
+    ``None`` means "count every request"; a string means "count only requests
+    whose model matches", which is what makes an idle Fable window read as
+    genuinely idle instead of as a share of whatever else is running.
+    """
+    if not window or window in ACCOUNT_WIDE_WINDOWS:
+        return None
+    return window
+
+
+def burning_models(
+    sensor,
+    declared: Sequence[str],
+    reported: Sequence[str],
+    *,
+    window_s: float = DEFAULT_WINDOW_S,
+) -> tuple[str, ...] | None:
+    """Which per-model windows should gate a switch: the ones being SPENT.
+
+    ``declared`` is ``autoswitch.model`` (names, or ``all``); ``reported`` is
+    the scoped windows this account actually has. The result is the subset
+    that has seen traffic in the trailing ``window_s``.
+
+    WHY MEASURE INSTEAD OF DECLARE. A static list says "all my work needs
+    Fable". When it does not, the engine reads an account holding Fable at
+    100% as having no quota at all — on a live fleet that turned an account
+    with 4 points left and the highest waste risk on the board into one scored
+    0.000 and treated as unusable.
+
+    IDLE IS NOT EVIDENCE. If the machine has spent nothing at all over the
+    window, every declared window is kept. "You are running Opus, not Fable"
+    and "you are running nothing" look identical in the token stream and mean
+    opposite things: the first is a measurement, the second is the absence of
+    one, and relaxing a gate on an absence is how you get sent to an account
+    that blocks the moment work resumes.
+    """
+    if not declared:
+        return ()
+    wanted = {d.strip().lower() for d in declared if d.strip()}
+    names = (
+        list(reported)
+        if "all" in wanted
+        else [name for name in reported if name.lower() in wanted]
+    )
+    if not names:
+        # The declared names match nothing any account reports. Returning an
+        # empty gating list would silently disable the windows AND swallow the
+        # one-shot typo guard, so this says "nothing to narrow" instead and
+        # leaves the caller's declared list intact.
+        return None
+    if sensor.tokens_per_s(window_s) <= 0:
+        return tuple(names)  # nothing ran: no evidence either way
+    return tuple(
+        name for name in names if sensor.tokens_per_s(window_s, name) > 0
+    )
+
+
+def model_matches(window_name: str, model_id: object) -> bool:
+    """Does one request's model count against a scoped window?
+
+    The API names a scoped window by DISPLAY name (``Fable``) while a
+    transcript records the model ID (``claude-fable-5``). Substring on the
+    display name is the only join the two sides offer, and it is the one a
+    reader makes by eye. A request with no model recorded counts against
+    nothing scoped: guessing would attribute spend to a window that may not
+    have moved at all.
+    """
+    if not isinstance(model_id, str):
+        return False
+    return window_name.lower() in model_id.lower()
 
 
 def weigh_usage(usage: dict | None) -> float:
@@ -175,7 +260,10 @@ class TranscriptBurnSensor:
         # this sensor should count).
         self._primed = False
         # (epoch, weighted tokens) newest-last, pruned to ``window_s``.
-        self._samples: deque[tuple[float, float]] = deque()
+        # (timestamp, weighted tokens, model id). The model is what lets a
+        # per-model window be measured on its OWN traffic rather than on a
+        # constant share of the machine's total.
+        self._samples: deque[tuple[float, float, str | None]] = deque()
         # Message ids already counted. Claude Code writes ONE LINE PER CONTENT
         # BLOCK, so a single API response appears 2-4 times carrying the same
         # `usage` — measured on a live transcript: 85 assistant lines for 38
@@ -308,7 +396,8 @@ class TranscriptBurnSensor:
             # clamping would stack an entire history onto "now" and report a
             # burst that never happened.
             return
-        self._samples.append((ts, weighted))
+        model = message.get("model")
+        self._samples.append((ts, weighted, model if isinstance(model, str) else None))
 
     def _prune(self, now: float) -> None:
         cutoff = now - self.window_s
@@ -317,7 +406,9 @@ class TranscriptBurnSensor:
 
     # -- read ---------------------------------------------------------------
 
-    def tokens_since(self, since_ts: float) -> float:
+    def tokens_since(
+        self, since_ts: float, model_filter: str | None = None
+    ) -> float:
         """Weighted tokens recorded strictly AFTER ``since_ts``.
 
         Half-open on purpose. Consecutive calibration intervals share an
@@ -328,9 +419,17 @@ class TranscriptBurnSensor:
         account as consuming 2000 and halved its calibrated scale, which
         understates its burn: the direction that overshoots a threshold.
         """
-        return sum(w for ts, w in self._samples if ts > since_ts)
+        return sum(
+            w for ts, w, model in self._samples
+            if ts > since_ts
+            and (model_filter is None or model_matches(model_filter, model))
+        )
 
-    def tokens_per_s(self, window_s: float = INSTANT_WINDOW_S) -> float:
+    def tokens_per_s(
+        self,
+        window_s: float = INSTANT_WINDOW_S,
+        model_filter: str | None = None,
+    ) -> float:
         """Weighted tokens per second over the trailing ``window_s``.
 
         Zero when nothing was spent — an idle machine has a real rate of
@@ -338,7 +437,7 @@ class TranscriptBurnSensor:
         """
         window_s = max(1.0, min(window_s, self.window_s))
         now = self.clock()
-        return self.tokens_since(now - window_s) / window_s
+        return self.tokens_since(now - window_s, model_filter) / window_s
 
 
 @dataclass
@@ -482,7 +581,12 @@ class BurnTracker:
             # faster burn than reality — the one error a threshold
             # recommendation must not make. Skip rather than approximate.
             return
-        delta_tokens = self.sensor.tokens_since(prev_ts)
+        # A SCOPED WINDOW IS CALIBRATED ON ITS OWN MODEL'S TOKENS. Dividing
+        # its percent by the machine's TOTAL tokens bakes the model mix at
+        # calibration time into the constant: calibrate during Fable-heavy
+        # work, switch to Opus, and the Fable window is still reported as
+        # burning at a share of everything else.
+        delta_tokens = self.sensor.tokens_since(prev_ts, window_model_filter(window))
         if delta_tokens <= 0:
             # Percent moved with no local spend: another machine (or the
             # phone app) is burning the same account. Real, but not
@@ -543,7 +647,7 @@ class BurnTracker:
         worth keeping.
         """
         return {
-            "schemaVersion": 1,
+            "schemaVersion": _CALIBRATION_SCHEMA,
             # Keyed "account|window": the ratio belongs to a window, not to
             # an account, and a cache that forgot which would restore the same
             # mixing bug it was written to fix.
@@ -562,6 +666,12 @@ class BurnTracker:
         tracker uncalibrated, which is the state it would have been in anyway.
         """
         if not isinstance(state, dict):
+            return
+        if state.get("schemaVersion") != _CALIBRATION_SCHEMA:
+            # Version 1 divided a per-model window's percent by the machine's
+            # TOTAL tokens, so its constants carry whatever mix was running
+            # when they were measured. There is no way to unmix them; they are
+            # dropped rather than restored wrong.
             return
         windows = state.get("windows")
         if not isinstance(windows, dict):
@@ -600,14 +710,21 @@ class BurnTracker:
         to whatever it has, which is only meaningful on a fleet whose windows
         happen to be the same size.
         """
-        tokens_per_s = self.sensor.tokens_per_s(window_s)
+        # Matched to the filter `observe` calibrated with — the constant and
+        # the rate it multiplies have to count the same tokens, or the product
+        # is two different measurements multiplied together.
+        model_filter = window_model_filter(window)
+        tokens_per_s = self.sensor.tokens_per_s(window_s, model_filter)
         k = self.pct_per_token(account, window)
         if k is not None:
             return BurnEstimate(
                 pct_per_s=k * tokens_per_s,
                 source="local",
                 calibrated=True,
-                tokens_per_s=tokens_per_s,
+                # The MACHINE's rate, not the filtered one: this field exists
+                # to show that work is happening at all, and an idle Fable
+                # window must not make a busy machine look stopped.
+                tokens_per_s=self.sensor.tokens_per_s(window_s),
             )
         history = self._observations.get(f"{account}\u0000{window}") if window else None
         if history and len(history) == 2:
@@ -618,9 +735,9 @@ class BurnTracker:
                     pct_per_s=(p1 - p0) / span,
                     source="api",
                     calibrated=False,
-                    tokens_per_s=tokens_per_s,
+                    tokens_per_s=self.sensor.tokens_per_s(window_s),
                 )
-        return BurnEstimate(tokens_per_s=tokens_per_s)
+        return BurnEstimate(tokens_per_s=self.sensor.tokens_per_s(window_s))
 
     def project(
         self, pct: float | None, estimate: BurnEstimate, threshold: float

@@ -2562,6 +2562,90 @@ def _model_usage(five_h: float, fable: float) -> dict:
     }
 
 
+class _MixSensor:
+    """Stands in for the transcript sensor with a fixed model mix."""
+
+    def __init__(self, **rates: float):
+        # key None = the machine's total; a name = that model's share.
+        self._rates = {(None if k == "total" else k): v for k, v in rates.items()}
+
+    def tokens_per_s(self, window_s: float = 60.0, model_filter=None) -> float:
+        return self._rates.get(model_filter, 0.0)
+
+    def poll(self) -> None:
+        pass
+
+
+class TestMeasuredModelMix:
+    """A per-model window gates only while that model is actually running."""
+
+    def _seed(self, temp_home: Path, sensor, **kw) -> EngineHarness:
+        h = EngineHarness(temp_home, **kw)
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        h.make_live("a@example.com", 1)
+        if h.engine._burn is not None:
+            h.engine._burn.sensor = sensor
+        return h
+
+    #: #1 is spent on Fable but has most of its 7d week left; #2 has less.
+    USAGE = {
+        "1": {
+            "five_hour": {"pct": 5.0},
+            "seven_day": {"pct": 40.0},
+            "scoped": [{"name": "Fable", "pct": 100.0}],
+        },
+        "2": {
+            "five_hour": {"pct": 5.0},
+            "seven_day": {"pct": 80.0},
+            "scoped": [{"name": "Fable", "pct": 10.0}],
+        },
+    }
+
+    def test_an_idle_model_stops_making_an_account_unusable(self, temp_home):
+        """The case that motivated this. Running Opus, #1's exhausted Fable
+        window cannot stop anything — it still has 60 points of week left, and
+        reading it as unusable threw that away."""
+        h = self._seed(
+            temp_home, _MixSensor(total=500.0, Opus=500.0), strategy="best"
+        )
+        outcome = h.tick_with_usage(self.USAGE)
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+        assert h.engine._models == ()
+
+    def test_a_running_model_still_gates(self, temp_home):
+        """Same fleet, Fable-heavy work: #1 genuinely cannot serve it."""
+        h = self._seed(
+            temp_home, _MixSensor(total=500.0, Fable=500.0), strategy="best"
+        )
+        outcome = h.tick_with_usage(self.USAGE)
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+        assert h.engine._models == ("Fable",)
+
+    def test_an_idle_machine_relaxes_nothing(self, temp_home):
+        """"You are running Opus, not Fable" and "you are running nothing"
+        look identical in the token stream and mean opposite things. Relaxing
+        a gate on an absence of evidence is how you get sent to an account
+        that blocks the moment work resumes."""
+        h = self._seed(temp_home, _MixSensor(), strategy="best")
+        outcome = h.tick_with_usage(self.USAGE)
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_the_setting_turns_it_off(self, temp_home):
+        h = self._seed(
+            temp_home,
+            _MixSensor(total=500.0, Opus=500.0),
+            strategy="best",
+            measured_model_mix=False,
+        )
+        outcome = h.tick_with_usage(self.USAGE)
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+
 class TestModelAwareSwitch:
     """`autoswitch.model` folds a per-model weekly limit into the decision."""
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from claude_swap import burn
 from claude_swap.burn import (
     BURST_MULTIPLIER,
     BURST_WINDOW_S,
@@ -45,13 +46,19 @@ def _assistant_line(
     input_: int = 0,
     cache_creation: int = 0,
     cache_read: int = 0,
+    model: str | None = None,
 ) -> str:
+    message: dict = {
+        "id": message_id,
+    }
+    if model is not None:
+        message["model"] = model
     return json.dumps(
         {
             "type": "assistant",
             "timestamp": _iso(ts),
             "message": {
-                "id": message_id,
+                **message,
                 "usage": {
                     "input_tokens": input_,
                     "output_tokens": output,
@@ -418,7 +425,10 @@ class TestCalibrationPersistence:
     def test_restore_is_bounded(self, projects: Path):
         tracker = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
         tracker.restore_calibration(
-            {"windows": {"1|5h": [[1.0, 100.0]] * 500}}
+            {
+                "schemaVersion": burn._CALIBRATION_SCHEMA,
+                "windows": {"1|5h": [[1.0, 100.0]] * 500},
+            }
         )
         assert len(tracker._calibration["1\x005h"]) <= 24
 
@@ -493,3 +503,115 @@ class TestActiveAccountTracking:
         tracker.observe("1", "5h", 10.0, clock.now)
         tracker.note_active("2")
         assert not tracker._observations
+
+
+class TestPerModelWindows:
+    """A per-model window is measured on ITS OWN traffic."""
+
+    def test_a_scoped_window_reads_idle_while_its_model_is_not_running(
+        self, projects: Path
+    ):
+        """The whole point. The rate used to be the machine's total tokens
+        times a per-window constant, so a Fable window "burned" at a fixed
+        share of Opus work — and an account whose Fable quota was untouchable
+        looked exactly like one that was being spent."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        path = _session(projects)
+        _append(path, _assistant_line(
+            message_id="m1", ts=clock.now, output=1000, model="claude-opus-5"
+        ))
+        clock.advance(1.0)
+        sensor.poll()
+        assert sensor.tokens_per_s(60.0) > 0, "the machine is busy"
+        assert sensor.tokens_per_s(60.0, "Fable") == 0.0, "but Fable is not"
+        assert sensor.tokens_per_s(60.0, "Opus") > 0.0
+
+    def test_it_comes_back_the_instant_that_model_runs_again(
+        self, projects: Path
+    ):
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        path = _session(projects)
+        _append(path, _assistant_line(
+            message_id="m1", ts=clock.now, output=1000, model="claude-fable-5"
+        ))
+        clock.advance(1.0)
+        sensor.poll()
+        assert sensor.tokens_per_s(60.0, "Fable") > 0.0
+
+    def test_a_request_with_no_model_counts_against_nothing_scoped(
+        self, projects: Path
+    ):
+        """Guessing would attribute spend to a window that may not have moved
+        at all, which is the direction that overstates a burn."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        _append(_session(projects), _assistant_line(
+            message_id="m1", ts=clock.now, output=1000
+        ))
+        clock.advance(1.0)
+        sensor.poll()
+        assert sensor.tokens_per_s(60.0) > 0
+        assert sensor.tokens_per_s(60.0, "Fable") == 0.0
+
+    def test_account_wide_windows_count_every_model(self, projects: Path):
+        assert burn.window_model_filter("5h") is None
+        assert burn.window_model_filter("7d") is None
+        assert burn.window_model_filter("Fable") == "Fable"
+        assert burn.window_model_filter(None) is None
+
+    def test_display_name_joins_to_the_model_id(self):
+        assert burn.model_matches("Fable", "claude-fable-5")
+        assert burn.model_matches("Opus", "claude-opus-5")
+        assert not burn.model_matches("Fable", "claude-opus-5")
+        assert not burn.model_matches("Fable", None)
+
+    def test_calibration_uses_the_windows_own_tokens(self, projects: Path):
+        """Dividing a scoped window's percent by the machine's TOTAL tokens
+        bakes the model mix at calibration time into the constant."""
+        clock = FakeClock()
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        tracker = BurnTracker(sensor=sensor)
+        path = _session(projects)
+        tracker.observe("1", "Fable", 10.0, clock.now)
+        # 1000 weighted tokens of Fable, and a pile of Opus that must not
+        # count toward the Fable scale.
+        _append(path,
+                _assistant_line(message_id="f1", ts=clock.now + 1,
+                                output=1000, model="claude-fable-5"),
+                _assistant_line(message_id="o1", ts=clock.now + 1,
+                                output=9000, model="claude-opus-5"))
+        clock.advance(10.0)
+        sensor.poll()
+        tracker.observe("1", "Fable", 11.0, clock.now)
+        k = tracker.pct_per_token("1", "Fable")
+        assert k is not None
+        fable_tokens = sensor.tokens_since(clock.now - 10.0, "Fable")
+        assert k == pytest.approx(1.0 / fable_tokens), (
+            "the constant must divide by Fable's tokens, not the machine's"
+        )
+
+    def test_version_one_calibration_is_dropped_not_restored(
+        self, projects: Path
+    ):
+        """v1 constants are global-token ratios; there is no way to unmix the
+        model share out of them."""
+        tracker = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
+        tracker.restore_calibration(
+            {"schemaVersion": 1, "windows": {"1|Fable": [[1.0, 100.0]]}}
+        )
+        assert tracker.pct_per_token("1", "Fable") is None
+
+    def test_a_round_trip_still_restores(self, projects: Path):
+        tracker = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
+        tracker._calibration["1\x00Fable"] = __import__("collections").deque(
+            [(1.0, 100.0)]
+        )
+        other = BurnTracker(sensor=TranscriptBurnSensor(projects, clock=FakeClock()))
+        other.restore_calibration(tracker.calibration_state())
+        assert other.pct_per_token("1", "Fable") is not None

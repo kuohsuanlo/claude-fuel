@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from rich.text import Text
@@ -102,6 +103,17 @@ _JOIN = "┃"
 # what stops me in the next few hours, what stops me this week, and what stops
 # the model I actually use. `None` means "whatever per-model windows the
 # accounts report", resolved at render time.
+def _short_duration(hours: float) -> str:
+    """``40m`` / ``11.6h`` / ``4d`` — one unit, chosen so the number stays
+    readable. Two units ("4d 9h") is more precise than any of these estimates
+    deserve to look."""
+    if hours < 1.0:
+        return f"{max(1, round(hours * 60)):.0f}m"
+    if hours < 24.0:
+        return f"{hours:.1f}h"
+    return f"{hours / 24.0:.0f}d"
+
+
 _BAR_ROWS: tuple[tuple[str, str | None], ...] = (
     ("session", "5h"),
     ("weekly", "7d"),
@@ -1092,7 +1104,81 @@ class FleetScreen(Screen):
         if waste is not None:
             text.append("\n      ")
             text.append(waste)
+        handover = self._handover_note(
+            self._tracker.estimate(active.number, weekly) if weekly else None,
+            palette,
+        )
+        if handover is not None:
+            text.append("\n      ")
+            text.append(handover)
         target.update(text)
+
+    def _handover_note(self, estimate, palette: Palette) -> Text | None:
+        """Which account gets the next turn, and whether its quota survives.
+
+        "No account is losing quota meaningfully faster than this one" is a
+        true answer to a question nobody asked. The one people actually ask —
+        twice, before this line existed — is *then when does the other account
+        get its turn*, and it is answerable: the risk axis has the deadline in
+        its denominator, so a candidate's urgency climbs until it clears the
+        gate whether or not anything else changes.
+
+        Silent when nothing is holding — while a switch is due the engine is
+        already making it, and a countdown to something happening now is
+        noise.
+        """
+        from claude_swap.autoswitch import (
+            WASTE_HYSTERESIS_RATIO,
+            WASTE_MIN_RISK_PCT_PER_H,
+        )
+
+        if self._settings is None or self._settings.strategy != "waste-first":
+            return None  # the projection is this strategy's arithmetic
+        now = time.time()
+        segments = self._segments(now)
+        active = next((seg for seg in segments if seg.is_active), None)
+        if active is None:
+            return None
+        soonest: tuple[float, fleet.FleetSegment] | None = None
+        for segment in segments:
+            if segment.is_active:
+                continue
+            hours = fleet.handover_eta_h(
+                active, segment, now,
+                ratio=WASTE_HYSTERESIS_RATIO, floor=WASTE_MIN_RISK_PCT_PER_H,
+            )
+            if hours is None or hours <= 0:
+                continue  # never, or already due — the engine is mid-switch
+            if soonest is None or hours < soonest[0]:
+                soonest = (hours, segment)
+        if soonest is None:
+            return None
+        hours, segment = soonest
+        text = Text(no_wrap=True, overflow="ellipsis")
+        # "by", not "at": the estimate holds both headrooms still, and burning
+        # the active account only lowers its risk, which brings this forward.
+        text.append(f"{segment.label} takes over by ", style=palette.muted)
+        text.append(
+            datetime.fromtimestamp(now + hours * 3600.0).strftime("%a %H:%M"),
+            style=palette.foreground,
+        )
+        window_h = ((segment.reset_ts or now) - now) / 3600.0 - hours
+        text.append(
+            f" · its {segment.headroom_pct:.0f} pts", style=palette.muted
+        )
+        rate = (estimate.pct_per_s or 0.0) if estimate is not None else 0.0
+        if rate > 0:
+            need_h = segment.headroom_pct / (rate * 3600.0)
+            text.append(" need ", style=palette.muted)
+            text.append(_short_duration(need_h), style=palette.foreground)
+            text.append(" and have ", style=palette.muted)
+            # Whether the turn is long enough to finish the quota is the whole
+            # reason the wait is acceptable; without it this is just a clock.
+            text.append(
+                _short_duration(window_h),
+                style=palette.sev_ok if window_h >= need_h else palette.sev_warn,
+            )
+        return text
 
     def _weekly_window_label(self, account) -> str | None:
         """Which reported window carries this account's expiring quota."""

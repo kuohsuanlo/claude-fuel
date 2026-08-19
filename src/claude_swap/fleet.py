@@ -291,6 +291,86 @@ def remaining_tank_pct(
     return len(segments) * weighted / total
 
 
+def handover_eta_h(
+    active: FleetSegment,
+    candidate: FleetSegment,
+    now: float,
+    *,
+    ratio: float,
+    floor: float,
+) -> float | None:
+    """Hours until ``candidate`` overtakes ``active`` on the waste-risk axis.
+
+    ``None`` when it never does before one of them resets.
+
+    The risk axis carries the deadline in its DENOMINATOR, so a candidate that
+    loses today's comparison does not lose it forever: its urgency climbs on
+    its own as its reset approaches, until it clears the hysteresis gate. That
+    is the answer to "then when does the other account get its turn", which is
+    a question the screen could not answer while it could only say that
+    nothing was more urgent right now.
+
+    Solved with both headrooms HELD CONSTANT, which makes the result a LATE
+    bound rather than a prediction: spending the active account lowers its
+    risk and brings the handover forward, never back. Callers should say "by",
+    not "at".
+
+    ``ratio`` and ``floor`` are the engine's own gate (a candidate must beat
+    ``ratio × active`` and clear ``floor``), passed in rather than imported so
+    this stays arithmetic and the engine keeps owning the policy.
+    """
+    if active.reset_ts is None or candidate.reset_ts is None:
+        return None
+    if candidate.headroom_pct <= 0:
+        return None
+    t_active = (active.reset_ts - now) / 3600.0
+    t_cand = (candidate.reset_ts - now) / 3600.0
+    if t_active <= 0 or t_cand <= 0:
+        return None
+    h_active, h_cand = active.headroom_pct, candidate.headroom_pct
+    # Past whichever window closes first the comparison is between quantities
+    # that no longer exist, so that is the horizon for an answer.
+    horizon = min(t_cand, t_active)
+
+    def risk(headroom: float, remaining: float, elapsed: float) -> float:
+        left = remaining - elapsed
+        return float("inf") if left <= 0 else headroom / left
+
+    # THE RATIO TEST IS MONOTONE, but which WAY depends on who resets first:
+    # risk_c/risk_a is (h_c/h_a)·(t_a-t)/(t_c-t), and that fraction climbs
+    # only while the candidate's window closes first. A candidate resetting
+    # LATER than the active account can only fall further behind, so waiting
+    # never helps it.
+    beats_ratio_now = h_cand / t_cand > ratio * (h_active / t_active)
+    if t_cand >= t_active:
+        if not beats_ratio_now:
+            return None
+        t_ratio = 0.0
+    elif beats_ratio_now:
+        t_ratio = 0.0
+    else:
+        denominator = ratio * h_active - h_cand
+        if denominator <= 0:
+            return None
+        t_ratio = (ratio * h_active * t_cand - h_cand * t_active) / denominator
+        if not 0.0 <= t_ratio < horizon:
+            return None
+    # The floor is an absolute rate and clears at an instant of its own. It is
+    # a SEPARATE gate, not a tie-break: a candidate can be well past the ratio
+    # and still be held back because a sliver of quota is not worth a switch.
+    # Folding the two together read "never" for exactly that case.
+    t_floor = 0.0 if floor <= 0 else max(0.0, t_cand - h_cand / floor)
+    when = max(t_ratio, t_floor, 0.0)
+    if when >= horizon:
+        return None
+    probe = min(when + 1e-6, (when + horizon) / 2.0)
+    if risk(h_cand, t_cand, probe) <= max(
+        ratio * risk(h_active, t_active, probe), floor
+    ):
+        return None
+    return when
+
+
 def total_at_risk(segments: Sequence[FleetSegment], now: float, horizon_s: float) -> float:
     """Weekly points across the fleet that expire within ``horizon_s``.
 

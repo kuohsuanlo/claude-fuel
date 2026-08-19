@@ -9,6 +9,7 @@ import pytest
 from claude_swap.fleet import (
     FleetSegment,
     burn_head,
+    handover_eta_h,
     order_segments,
     remaining_tank_pct,
     segment_for,
@@ -296,3 +297,73 @@ class TestRemainingTankPct:
         segs = [_seg("1", 40.0), _seg("2", 60.0)]
         assert remaining_tank_pct(segs, [1.0]) == pytest.approx(100.0)
         assert remaining_tank_pct(segs, [0.0, 0.0]) == 0.0
+
+
+class TestHandoverEta:
+    """When the account that lost today's comparison gets its turn."""
+
+    GATE = {"ratio": 1.25, "floor": 0.1}
+
+    def test_the_candidate_climbs_until_it_clears_the_gate(self):
+        """A live case: 23 points over 141h beats 7 points over 105h now, and
+        the question the screen could not answer was when that stops being
+        true. It is 11.6h before the candidate's own reset — with the 7 points
+        needing 40 minutes at the measured rate, so nothing is lost by
+        waiting."""
+        active = _seg("1", 23.0, hours=141.0, active=True)
+        candidate = _seg("2", 7.0, hours=105.0)
+        eta = handover_eta_h(active, candidate, NOW, **self.GATE)
+        assert eta == pytest.approx(93.41, abs=0.05)
+        assert 105.0 - eta == pytest.approx(11.59, abs=0.05)
+
+    def test_a_candidate_already_past_the_gate_reads_zero(self):
+        """Not None: "now" and "never" must not collapse to one answer, or the
+        caller cannot tell a switch in progress from one that never comes."""
+        active = _seg("1", 5.0, hours=100.0, active=True)
+        candidate = _seg("2", 40.0, hours=10.0)
+        assert handover_eta_h(active, candidate, NOW, **self.GATE) == 0.0
+
+    def test_never_when_the_active_window_closes_first(self):
+        """The active account's own risk runs away as its reset nears, so a
+        distant candidate never catches it inside the window they share."""
+        active = _seg("1", 50.0, hours=10.0, active=True)
+        candidate = _seg("2", 5.0, hours=100.0)
+        assert handover_eta_h(active, candidate, NOW, **self.GATE) is None
+
+    def test_the_floor_delays_a_candidate_with_almost_nothing_left(self):
+        """Beating the ratio is not enough — an account with a sliver of quota
+        must also be losing it fast enough in absolute terms, or every fleet
+        would thrash over rounding."""
+        # The candidate is ALREADY past the ratio (0.02 %/h against an active
+        # account's 0.01), so only the floor is holding it. Folding the two
+        # gates into one closed form reported "never" for this exact shape.
+        active = _seg("1", 2.0, hours=200.0, active=True)
+        candidate = _seg("2", 1.0, hours=50.0)
+        eta = handover_eta_h(active, candidate, NOW, **self.GATE)
+        assert eta is not None
+        # 1 point clears 0.1 %/h only inside the last 10 hours of its window.
+        assert 50.0 - eta == pytest.approx(10.0, abs=0.05)
+
+    def test_the_ratio_can_bind_later_than_the_floor(self):
+        """The other order: plenty of absolute urgency, but a rival holding
+        far more perishable quota. Whichever gate opens last decides."""
+        active = _seg("1", 60.0, hours=200.0, active=True)
+        candidate = _seg("2", 1.0, hours=50.0)
+        eta = handover_eta_h(active, candidate, NOW, **self.GATE)
+        assert 50.0 - eta == pytest.approx(2.03, abs=0.05)
+
+    def test_an_exhausted_candidate_never_takes_over(self):
+        active = _seg("1", 20.0, hours=100.0, active=True)
+        assert handover_eta_h(
+            active, _seg("2", 0.0, hours=5.0), NOW, **self.GATE
+        ) is None
+
+    def test_unknown_resets_are_not_schedulable(self):
+        active = _seg("1", 20.0, hours=100.0, active=True)
+        assert handover_eta_h(
+            active, _seg("2", 30.0, hours=None), NOW, **self.GATE
+        ) is None
+        assert handover_eta_h(
+            _seg("1", 20.0, hours=None, active=True),
+            _seg("2", 30.0, hours=5.0), NOW, **self.GATE
+        ) is None

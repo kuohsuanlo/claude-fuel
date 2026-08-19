@@ -108,10 +108,11 @@ how much fuel is left and the boundaries inside it are who holds it.
 ### The burn readout
 
 ```
-burn  5h     0.023%/s  ·  1% every 43s   suggested 99.5% (yours 99.9% — press r)
-      7d     0.012%/s  ·  1% every 87s
-      Fable  1,118 tok/s  ·  calibrating
-      at this rate dev5 wastes 12 of its 47 pts
+burn  5h     0.023%/s  ·  1% every 43s
+      7d     0.010%/s  ·  1% every 103s
+      Fable  0.011%/s  ·  1% every 90s   suggested 99.5% (yours 99.9% — press r)
+      dev's 23 pts are all spendable before they expire
+      dev4 takes over by Sun 07:15 · its 7 pts need 40m and have 11.6h
 ```
 
 One rate per window, because there is no such thing as "the" burn rate — the
@@ -122,6 +123,20 @@ second form states that directly.
 
 `r` adopts the suggested threshold, which is the highest one the current rate
 can survive.
+
+**The last line says when the other account gets its turn.** "Nothing is more
+urgent than this one" is a true answer to a question nobody asked; the one
+people actually ask is *then when does account 2 get used*. It is answerable
+because the risk axis carries the deadline in its denominator: a candidate
+that loses today's comparison climbs on its own until it clears the
+hysteresis gate, whether or not anything else changes. The line pairs that
+instant with whether the quota survives the wait — 7 points needing 40 minutes
+with 11.6 hours of window left is a wait that costs nothing, and the same line
+turns amber when it is not.
+
+It says "by" rather than "at" on purpose: the estimate holds both accounts'
+headroom still, and spending the active one only lowers its risk, which brings
+the handover forward.
 
 ### Beep
 

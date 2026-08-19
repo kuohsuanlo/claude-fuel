@@ -2365,6 +2365,96 @@ class TestGaugesShowOnlyWhatTheEngineReads:
 
 
 @pytest.mark.asyncio
+class TestHandoverNote:
+    """When the account that lost this comparison gets its turn."""
+
+    @staticmethod
+    def _fleet(tmp_path, strategy="waste-first"):
+        import json as _json
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1,
+            "autoswitch": {"model": "all", "strategy": strategy},
+        }))
+        # Built by hand rather than with make_entry: that helper pins every
+        # account's 7d reset to the same instant, and two identical deadlines
+        # is precisely the case where no handover can ever be due.
+        def entry(five, seven, fable, hours):
+            return UsageEntry(
+                last_good={
+                    "five_hour": {"pct": five, "resets_at": _iso_in(4 * 3600)},
+                    "seven_day": {
+                        "pct": seven, "resets_at": _iso_in(hours * 3600)
+                    },
+                    "scoped": [{
+                        "name": "Fable", "pct": fable,
+                        "resets_at": _iso_in(hours * 3600),
+                    }],
+                },
+                fetched_at=time.time() - 5.0,
+                age_s=5.0,
+            )
+
+        return FakeSwitcher(
+            [
+                # 23 perishable points over ~6d — wins the comparison today.
+                make_account(1, active=True, entry=entry(4.0, 64.0, 77.0, 141)),
+                # 7 points over ~4d — its turn comes as its reset approaches.
+                make_account(2, entry=entry(0.0, 93.0, 78.0, 105)),
+            ],
+            tmp_path,
+        )
+
+    async def _burn_text(self, tmp_path, strategy="waste-first"):
+        from unittest.mock import patch as _patch
+
+        from textual.widgets import Static
+
+        from claude_swap.burn import BurnEstimate
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(self._fleet(tmp_path, strategy), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            estimate = BurnEstimate(
+                pct_per_s=1 / 346.0, tokens_per_s=3000.0, calibrated=True
+            )
+            with _patch.object(
+                app.screen._tracker, "estimate", return_value=estimate
+            ):
+                app.screen._render_burn(Palette.DARK)
+                rendered = app.screen.query_one("#fleet-burn", Static).render()
+            return (
+                rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            )
+
+    async def test_it_names_the_next_account_and_when(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """"No account is losing quota meaningfully faster than this one" is a
+        true answer to a question nobody asked. This is the one people ask."""
+        text = await self._burn_text(tmp_path)
+        line = next(
+            (l for l in text.split("\n") if "takes over" in l), None
+        )
+        assert line is not None, text
+        assert "user2 takes over by " in line
+        # The wait is only acceptable because the quota survives it, so the
+        # line has to carry both halves of that comparison.
+        assert " pts need " in line and " and have " in line
+
+    async def test_it_is_silent_for_strategies_it_cannot_speak_for(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """The projection is waste-first's own arithmetic — the hysteresis
+        gate on the risk axis. Printing it beside a different strategy would
+        be describing a decision that is not being made."""
+        text = await self._burn_text(tmp_path, strategy="consume-first")
+        assert "takes over" not in text
+
+
+@pytest.mark.asyncio
 class TestTheTankReading:
     """The number in front of each bar: how much fuel the fleet holds."""
 

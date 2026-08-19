@@ -334,15 +334,34 @@ def load_ui_settings(backup_root: Path) -> UiSettings:
 
 
 def save_settings(backup_root: Path, settings: AutoSwitchSettings) -> None:
-    """Write the autoswitch section, preserving unknown keys and sections."""
+    """Write the autoswitch section, preserving unknown keys and sections.
+
+    ONLY VALUES THAT DIFFER FROM THE DEFAULT ARE WRITTEN; ones that match it
+    are removed. Writing every field froze the whole section the first time
+    the user nudged any single one of them — pressing ``t`` to move the
+    threshold pinned every other setting at whatever the defaults happened to
+    be that day, so later improvements to those defaults could never reach the
+    people already running the tool. Measured live: a burst floor raised from
+    0.5 to 1.0 did not take effect because a threshold edit weeks earlier had
+    stamped 0.5 into the file.
+
+    An explicit value equal to the default is dropped rather than kept. It
+    resolves to the same setting either way, and "unset" is the state that can
+    still improve.
+    """
     path = settings_path(backup_root)
     raw = _read_raw(path)
     raw["schemaVersion"] = raw.get("schemaVersion", SETTINGS_SCHEMA_VERSION)
     section = raw.get("autoswitch")
     if not isinstance(section, dict):
         section = {}
+    defaults = AutoSwitchSettings()
     for field, json_key in _AUTOSWITCH_KEYS.items():
-        section[json_key] = getattr(settings, field)
+        value = getattr(settings, field)
+        if value == getattr(defaults, field):
+            section.pop(json_key, None)
+        else:
+            section[json_key] = value
     raw["autoswitch"] = section
     atomic_write_json(path, raw)
 

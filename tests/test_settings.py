@@ -386,3 +386,51 @@ class TestAtomicWriteThroughSymlink:
         assert (repo.stat().st_mode & 0o777) == 0o755, "foreign dir untouched"
         assert (live.stat().st_mode & 0o777) == 0o700, "our dir hardened"
         assert (tracked.stat().st_mode & 0o777) == 0o600, "file still 0600"
+
+
+class TestSaveKeepsDefaultsUnset:
+    """A nudge to one setting must not freeze all the others."""
+
+    def test_a_value_matching_the_default_is_not_written(self, tmp_path: Path):
+        """Writing every field pinned the whole section the first time the
+        user moved any single one of it. Measured live: a burst floor raised
+        from 0.5 to 1.0 never reached the machine, because a threshold edit
+        weeks earlier had stamped 0.5 into the file."""
+        save_settings(tmp_path, AutoSwitchSettings(threshold=97.5))
+        raw = json.loads(settings_path(tmp_path).read_text())
+        assert raw["autoswitch"] == {"threshold": 97.5}, raw["autoswitch"]
+
+    def test_a_later_default_change_reaches_an_existing_file(
+        self, tmp_path: Path
+    ):
+        save_settings(tmp_path, AutoSwitchSettings(threshold=97.5))
+        loaded = load_settings(tmp_path)
+        assert loaded.threshold == 97.5
+        assert loaded.burst_floor_pct == AutoSwitchSettings().burst_floor_pct
+
+    def test_a_previously_pinned_default_is_cleared_on_the_next_save(
+        self, tmp_path: Path
+    ):
+        settings_path(tmp_path).write_text(json.dumps({
+            "autoswitch": {"threshold": 99.0, "burstFloorPct": 0.5},
+        }))
+        # 0.5 is no longer the default, so it survives...
+        assert load_settings(tmp_path).burst_floor_pct == 0.5
+        # ...until something saves a settings object that matches the default.
+        save_settings(tmp_path, AutoSwitchSettings(threshold=99.0))
+        raw = json.loads(settings_path(tmp_path).read_text())
+        assert "burstFloorPct" not in raw["autoswitch"]
+
+    def test_non_default_values_are_still_written(self, tmp_path: Path):
+        save_settings(tmp_path, AutoSwitchSettings(burst_floor_pct=3.0))
+        raw = json.loads(settings_path(tmp_path).read_text())
+        assert raw["autoswitch"]["burstFloorPct"] == 3.0
+
+    def test_unknown_keys_and_sections_survive(self, tmp_path: Path):
+        settings_path(tmp_path).write_text(json.dumps({
+            "autoswitch": {"somethingElse": 1}, "ui": {"theme": "dark"},
+        }))
+        save_settings(tmp_path, AutoSwitchSettings(threshold=97.5))
+        raw = json.loads(settings_path(tmp_path).read_text())
+        assert raw["autoswitch"]["somethingElse"] == 1
+        assert raw["ui"] == {"theme": "dark"}

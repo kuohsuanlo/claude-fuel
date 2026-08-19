@@ -438,7 +438,10 @@ Linux). `cfuel config` lists everything; the keys this fork adds:
 | `autoswitch.measuredModelMix` | `true` | Gate on a model's limit only while that model is running |
 
 The threshold you set with `t` in the TUI is written here too, so it survives a
-restart.
+restart. **Only values that differ from their default are stored** — writing
+every field froze the whole section the first time you nudged any single one
+of them, so later improvements to a default could never reach a machine that
+had already been running.
 
 **Switching moves every session on the machine.** They all share the active
 login, so arming auto-switch moves all of them at once.
@@ -451,7 +454,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2325 tests
+uv run pytest -q                       # 2330 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

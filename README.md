@@ -409,10 +409,17 @@ destroys quota that only *it* could have served, while the same turn on the
 first destroys none.
 
 The engine therefore will not leave a less capable account for a more capable
-one while the less capable one can still absorb work, and ranks the least
-capable first among the candidates that qualify. This is a dominance argument,
-not a tuned preference — draining the spent account first is never worse, and
-is better the moment a task needs the model you kept.
+one while the less capable one can still absorb work; it ranks the least
+capable first; and **a strictly less capable candidate skips the risk gate
+entirely**. That last part is what makes the rule do anything: an account
+holding model-less quota is by construction the calmest thing on the board —
+little left, far reset — so it never cleared the gate and was never chosen as
+a target. Refusing to leave it was not enough when nothing ever went there.
+
+This is a dominance argument, not a tuned preference — draining the spent
+account first is never worse, and is better the moment a task needs the model
+you kept. Equally capable accounts still face the ordinary gate, so they
+cannot trade places on noise.
 
 It lifts in two places, both necessary:
 
@@ -488,7 +495,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2337 tests
+uv run pytest -q                       # 2339 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

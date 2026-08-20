@@ -104,6 +104,17 @@ _JOIN = "┃"
 # what stops me in the next few hours, what stops me this week, and what stops
 # the model I actually use. `None` means "whatever per-model windows the
 # accounts report", resolved at render time.
+def _project_label(encoded: str) -> str:
+    """``-home-logocat-Server-x`` -> ``x``.
+
+    Claude Code encodes a project path by replacing separators with dashes,
+    which is unreadable and long. Only the leaf matters here — the question is
+    which of your sessions, not where it lives.
+    """
+    leaf = encoded.rstrip("-").rsplit("-", 1)[-1]
+    return leaf or encoded
+
+
 def _short_duration(hours: float) -> str:
     """``40m`` / ``11.6h`` / ``4d`` — one unit, chosen so the number stays
     readable. Two units ("4d 9h") is more precise than any of these estimates
@@ -289,6 +300,33 @@ class FleetScreen(Screen):
             )
         except Exception:
             pass
+
+    def _gating_source_note(self, label: str, palette: Palette) -> list[Text]:
+        """``· claude-sandbox`` — the projects keeping a model window binding.
+
+        Only for per-model rows: the 5h and 7d windows count every request, so
+        naming a source there says nothing a reader does not already know.
+        Silent when nothing local is spending on it — the window may be gating
+        because the model is merely SELECTED, which is a different fact and
+        already visible in the settings.
+        """
+        from claude_swap.burn import ACCOUNT_WIDE_WINDOWS
+
+        if label in ACCOUNT_WIDE_WINDOWS or self._sensor is None:
+            return []
+        try:
+            sources = self._sensor.recent_sources(model_filter=label)
+        except Exception:  # pragma: no cover - sensing must never break a paint
+            return []
+        if not sources:
+            return []
+        names = [_project_label(name) for name, _tokens in sources[:2]]
+        if len(sources) > 2:
+            names.append(f"+{len(sources) - 2}")
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append("  · ", style=palette.track)
+        text.append(", ".join(names), style=palette.muted)
+        return [text]
 
     def _row_gates(self, label: str) -> bool:
         """Is this window one the engine would actually stop on right now?"""
@@ -1068,6 +1106,15 @@ class FleetScreen(Screen):
                 # will stop you right now. Saying so beats removing the bar,
                 # which reads as the limit having disappeared.
                 text.append("  not running", style=palette.track)
+            else:
+                # WHO IS KEEPING IT BINDING. The gating decision covers the
+                # whole machine, so one unrelated session on this model makes
+                # every account exhausted on it read as unusable — and nothing
+                # said so. Reported live: "我現在只有 opus task,它為什麼不
+                # 優先用掉我 fable5 用光的帳號", with another session having
+                # run Fable five minutes earlier.
+                for note in self._gating_source_note(label, palette):
+                    text.append(note)
             # ▲ BELOW: where quota is being drawn from right now. Two markers
             # rather than one because "what dies first" and "what I am
             # spending" are different questions, and the whole point of the

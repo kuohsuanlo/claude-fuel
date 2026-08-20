@@ -2706,6 +2706,62 @@ class TestCapabilityIsSpentLast:
         assert outcome is TickOutcome.NO_ACTION
         assert h.active_number() == 1
 
+    def test_it_moves_TO_the_spent_account_even_when_it_is_calmer(
+        self, temp_home
+    ):
+        """The half the first cut was missing.
+
+        Refusing to leave a spent-capability account is not enough: the account
+        holding Opus-only quota is by construction the calmest thing on the
+        board (little left, far reset), so it never cleared the risk gate and
+        was never chosen as a TARGET. The fleet drifted onto capable accounts
+        and burned their Fable-capable quota on Opus work — exactly backwards,
+        and the case reported live.
+        """
+        h = self._seed(temp_home)
+        now = h.clock()
+
+        def usage(seven, fable, hours):
+            return {
+                "five_hour": {"pct": 5.0, "resets_at": _iso_at(now + 3 * 3600)},
+                "seven_day": {"pct": seven, "resets_at": _iso_at(now + hours * 3600)},
+                "scoped": [{"name": "Fable", "pct": fable,
+                            "resets_at": _iso_at(now + hours * 3600)}],
+            }
+
+        outcome = h.tick_with_usage({
+            # active: roomy AND fully capable — the ordinary ranking loves it
+            "1": usage(20.0, 20.0, 120.0),
+            # 10 points of Opus-only quota, far reset: the calmest account
+            # here, and the one that should be drained first.
+            "2": usage(90.0, 100.0, 120.0),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_equally_capable_accounts_still_face_the_ordinary_gate(
+        self, temp_home
+    ):
+        """"Strictly less" matters: without it two accounts with the same
+        capability could trade places on noise."""
+        h = self._seed(temp_home)
+        now = h.clock()
+
+        def usage(seven, hours):
+            return {
+                "five_hour": {"pct": 5.0, "resets_at": _iso_at(now + 3 * 3600)},
+                "seven_day": {"pct": seven, "resets_at": _iso_at(now + hours * 3600)},
+                "scoped": [{"name": "Fable", "pct": 100.0,
+                            "resets_at": _iso_at(now + hours * 3600)}],
+            }
+
+        outcome = h.tick_with_usage({
+            "1": usage(20.0, 120.0),   # both have a dead Fable window
+            "2": usage(90.0, 120.0),   # calmer, but no capability advantage
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
     def test_it_moves_once_the_spent_account_is_drained(self, temp_home):
         """The preference is bounded by usefulness — it holds only while the
         less capable account can still absorb work."""

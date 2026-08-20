@@ -2276,6 +2276,27 @@ class AutoSwitchEngine:
             any_known = True          # it EXISTS and is readable either way
             if h <= 0:
                 continue  # itself at its limit — never a target
+            if (
+                trigger not in PROACTIVE_TRIGGERS
+                and not all_above
+                and active_headroom is not None
+                and h <= active_headroom
+            ):
+                # AN ESCAPE MUST BE AN IMPROVEMENT, not merely a move. The
+                # escape asks "can I still work here?", never "is anywhere
+                # better?", so two accounts that are both nearly spent trade
+                # places forever: measured live, eight switches in six minutes
+                # with the last pair 0.5 seconds apart.
+                #
+                # NOT an anti-flap bar — those are all scoped to the proactive
+                # triggers on purpose, because barring an escape strands a
+                # fleet whose accounts are all exhausted. This strands nothing:
+                # it only ever refuses a destination that is no better than
+                # where we already are, and when EVERY account is above the
+                # threshold `all_above` takes the recovery-ordered branch
+                # below, which is what moves a dead fleet to whichever account
+                # comes back first.
+                continue
             if h < landing_margin and num != no_return:
                 # Too thin to land on. Kept aside rather than dropped: if
                 # NOTHING clears the margin the fleet is simply short, and a
@@ -2371,7 +2392,27 @@ class AutoSwitchEngine:
                     # hysteresis gate below is what keeps that guard in force;
                     # the risk axis still decides the ORDER among candidates
                     # that clear it, because the sort key keys on the strategy.
-                    if risk is None or risk <= max(
+                    if risk is None:
+                        continue
+                    # A STRICTLY LESS CAPABLE CANDIDATE SKIPS THE RISK GATE.
+                    # The gate asks "is quota over there expiring faster?",
+                    # which is the wrong question for this move: spending an
+                    # account whose model windows are already gone destroys
+                    # nothing another account could not also have served, so
+                    # going there is dominance-positive whatever the rates say.
+                    # Without this the rule could only ever REFUSE a bad move,
+                    # never make the good one — the account holding Opus-only
+                    # quota was always the calmest thing on the board and so
+                    # never qualified as a target at all.
+                    #
+                    # Strictly less, so two equally capable accounts still face
+                    # the ordinary gate and cannot trade places on noise.
+                    less_capable = (
+                        active_capability is not None
+                        and self._idle_capability(usage.get(num))
+                        < active_capability
+                    )
+                    if not less_capable and risk <= max(
                         (active_risk or 0.0) * WASTE_HYSTERESIS_RATIO,
                         WASTE_MIN_RISK_PCT_PER_H,
                     ):

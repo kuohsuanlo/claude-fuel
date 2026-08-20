@@ -112,6 +112,18 @@ BURST_WINDOW_S = 60.0
 # mid-turn; a threshold one point low costs one earlier switch.
 BURST_FLOOR_PCT = 1.0
 
+# How recently a model must have run to count as IN USE. Deliberately much
+# shorter than the sensor's own retention: that window exists to smooth a RATE,
+# where thirty minutes is right, while "is this model in use" needs recency.
+# Sharing one horizon meant a model idle for twenty-five minutes still gated,
+# and every account exhausted on it still read as unusable — measured live, an
+# account was escaped away from 25.3 minutes after the last Fable request.
+#
+# Shortening this is only safe because SELECTION gates independently: a model
+# you have chosen binds at zero traffic (see `configured_models`), so the case
+# this window has to catch is narrowed to "running right now".
+GATING_IDLE_WINDOW_S = 300.0
+
 # Bounds for the recommendation, matching settings.json's own threshold range
 # so the advice is always a value the user could actually set.
 _THRESHOLD_LO = 50.0
@@ -180,7 +192,7 @@ def burning_models(
     declared: Sequence[str],
     reported: Sequence[str],
     *,
-    window_s: float = DEFAULT_WINDOW_S,
+    window_s: float = GATING_IDLE_WINDOW_S,
     configured: Sequence[str] | None = None,
 ) -> tuple[str, ...] | None:
     """Which per-model windows should gate a switch: the ones being SPENT.
@@ -320,10 +332,13 @@ class TranscriptBurnSensor:
         # this sensor should count).
         self._primed = False
         # (epoch, weighted tokens) newest-last, pruned to ``window_s``.
-        # (timestamp, weighted tokens, model id). The model is what lets a
-        # per-model window be measured on its OWN traffic rather than on a
-        # constant share of the machine's total.
-        self._samples: deque[tuple[float, float, str | None]] = deque()
+        # (timestamp, weighted tokens, model id, source project). The model
+        # is what lets a per-model window be measured on its OWN traffic rather
+        # than on a constant share of the machine's total; the source answers
+        # "who is keeping this window gating", which is otherwise invisible —
+        # a single other session on Fable makes every Fable-exhausted account
+        # read as unusable, and nothing on screen said why.
+        self._samples: deque[tuple[float, float, str | None, str]] = deque()
         # Message ids already counted. Claude Code writes ONE LINE PER CONTENT
         # BLOCK, so a single API response appears 2-4 times carrying the same
         # `usage` — measured on a live transcript: 85 assistant lines for 38
@@ -418,10 +433,13 @@ class TranscriptBurnSensor:
         consumed = data.rfind(b"\n") + 1
         cursor.offset += consumed
         cursor.size = size
+        # The project directory is the readable half of a transcript path and
+        # the same label the dashboard already lists instances under.
+        source = path.parent.name
         for raw in data[:consumed].splitlines():
-            self._consume_line(raw, now)
+            self._consume_line(raw, now, source)
 
-    def _consume_line(self, raw: bytes, now: float) -> None:
+    def _consume_line(self, raw: bytes, now: float, source: str = "") -> None:
         if b'"usage"' not in raw:
             return  # cheap reject: user/tool-result lines carry no usage
         try:
@@ -457,7 +475,9 @@ class TranscriptBurnSensor:
             # burst that never happened.
             return
         model = message.get("model")
-        self._samples.append((ts, weighted, model if isinstance(model, str) else None))
+        self._samples.append(
+            (ts, weighted, model if isinstance(model, str) else None, source)
+        )
 
     def _prune(self, now: float) -> None:
         cutoff = now - self.window_s
@@ -480,10 +500,31 @@ class TranscriptBurnSensor:
         understates its burn: the direction that overshoots a threshold.
         """
         return sum(
-            w for ts, w, model in self._samples
+            w for ts, w, model, _src in self._samples
             if ts > since_ts
             and (model_filter is None or model_matches(model_filter, model))
         )
+
+    def recent_sources(
+        self, window_s: float = DEFAULT_WINDOW_S, model_filter: str | None = None
+    ) -> list[tuple[str, float]]:
+        """Which projects have spent on this model lately, busiest first.
+
+        The gating decision is made for the WHOLE MACHINE, so one unrelated
+        session can keep a per-model window binding and make every account
+        exhausted on that model read as unusable. Without naming the source
+        that is unexplainable from the screen.
+        """
+        window_s = max(1.0, min(window_s, self.window_s))
+        cutoff = self.clock() - window_s
+        totals: dict[str, float] = {}
+        for ts, weighted, model, source in self._samples:
+            if ts <= cutoff or not source:
+                continue
+            if model_filter is not None and not model_matches(model_filter, model):
+                continue
+            totals[source] = totals.get(source, 0.0) + weighted
+        return sorted(totals.items(), key=lambda item: -item[1])
 
     def tokens_per_s(
         self,

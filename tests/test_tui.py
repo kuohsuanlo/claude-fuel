@@ -2048,7 +2048,7 @@ class TestWasteProjectionUnits:
             # (ts, weighted, model): a scoped window is measured on its own
             # model's traffic, so a sample has to say which model it was.
             app.screen._sensor._samples.append(
-                (time.time(), 1000.0, "claude-fable-5")
+                (time.time(), 1000.0, "claude-fable-5", "-home-me-proj")
             )
             app.screen._display_tick()
             text = self._text(app)

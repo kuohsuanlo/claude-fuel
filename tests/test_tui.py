@@ -2451,8 +2451,13 @@ class TestGaugesShowOnlyWhatTheEngineReads:
                 app.screen._display_tick()
                 bars = await self._bars(pilot, app)
         assert "Fable" in bars, "the row must survive not being the binding limit"
-        line = next(l for l in bars.split("\n") if "Fable" in l)
-        assert "not running" in line, line
+        # The label sits on its OWN line under the row: trailing the
+        # per-account percentages, the longest row on screen pushed it off the
+        # edge — the one place a reader looks to find out why an account
+        # reads as unusable.
+        rows = bars.split("\n")
+        index = next(i for i, l in enumerate(rows) if "Fable" in l)
+        assert any("not running" in l for l in rows[index:index + 3]), rows[index:]
 
     async def test_the_model_row_vanishes_when_the_engine_ignores_it(
         self, tmp_path, fake_fleet_engine

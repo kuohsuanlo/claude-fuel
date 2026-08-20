@@ -350,6 +350,31 @@ class FleetScreen(Screen):
         except Exception:
             pass
 
+    def _row_status_note(self, label: str, palette: Palette) -> Text | None:
+        """``not running`` / ``running · kenshi-zone-mc`` for a per-model row.
+
+        The quota behind a window that is not gating is real and still
+        expires; it simply is not what will stop you right now. Saying so
+        beats removing the bar, which reads as the limit having disappeared.
+
+        When it IS gating, naming who is spending on it answers the question
+        that follows immediately — the decision covers the whole machine, so
+        one unrelated session makes every account exhausted on that model read
+        as unusable.
+        """
+        from claude_swap.burn import ACCOUNT_WIDE_WINDOWS
+
+        if label in ACCOUNT_WIDE_WINDOWS:
+            return None
+        text = Text(no_wrap=True, overflow="ellipsis")
+        if not self._row_gates(label):
+            text.append("not running", style=palette.track)
+            return text
+        text.append("running", style=palette.accent)
+        for note in self._gating_source_note(label, palette):
+            text.append(note)
+        return text
+
     def _gating_source_note(self, label: str, palette: Palette) -> list[Text]:
         """``· claude-sandbox`` — the projects keeping a model window binding.
 
@@ -1173,20 +1198,6 @@ class FleetScreen(Screen):
                 countdown = segment.countdown_text(now)
                 if countdown:
                     text.append(f" {countdown}", style=palette.muted)
-            if not self._row_gates(label):
-                # The quota is real and still expires; it just is not what
-                # will stop you right now. Saying so beats removing the bar,
-                # which reads as the limit having disappeared.
-                text.append("  not running", style=palette.track)
-            else:
-                # WHO IS KEEPING IT BINDING. The gating decision covers the
-                # whole machine, so one unrelated session on this model makes
-                # every account exhausted on it read as unusable — and nothing
-                # said so. Reported live: "我現在只有 opus task,它為什麼不
-                # 優先用掉我 fable5 用光的帳號", with another session having
-                # run Fable five minutes earlier.
-                for note in self._gating_source_note(label, palette):
-                    text.append(note)
             # ▲ BELOW: where quota is being drawn from right now. Two markers
             # rather than one because "what dies first" and "what I am
             # spending" are different questions, and the whole point of the
@@ -1199,7 +1210,23 @@ class FleetScreen(Screen):
                     active, colour_of.get(active.number, palette.accent), palette,
                     now, suffix=" active", newline=False,
                 )
+            # WHETHER THIS LIMIT IS IN FORCE, on its own line UNDER the row.
+            # It used to trail the per-account percentages, where the longest
+            # row on the screen pushed it off the edge — the one place a
+            # reader looks to find out why an account reads as unusable.
+            note = self._row_status_note(label, palette)
+            if note is not None:
+                text.append("\n")
+                text.append(" " * gutter)
+                text.append(note)
         text.append("\n")
+        # ONCE, WHEN THE TEXT IS COMPLETE. This lived at the end of `_marker`,
+        # so the widget was published while the block was still being built —
+        # it happened to look right only because nothing was appended after
+        # the last marker. Moving one line below a marker made the last row's
+        # status vanish, which is the same class of bug as publishing a
+        # half-written record.
+        self.query_one("#fleet-bars", Static).update(text)
 
     def _marker(
         self, text, column, glyph, segment, colour, palette, now, *,
@@ -1219,8 +1246,6 @@ class FleetScreen(Screen):
             text.append(suffix, style=f"bold {palette.accent}")
         if newline:
             text.append("\n")
-
-        self.query_one("#fleet-bars", Static).update(text)
 
     def _gauge(
         self,

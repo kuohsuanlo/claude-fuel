@@ -2471,6 +2471,79 @@ class TestGaugesShowOnlyWhatTheEngineReads:
 
 
 @pytest.mark.asyncio
+class TestRunningInstancesShowActivity:
+    """Which sessions are working, not merely how many exist.
+
+    One unrelated session can pin a per-model window and make every account
+    exhausted on that model read as unusable. That was invisible: the list
+    counted sessions and said nothing about which were spending.
+    """
+
+    @staticmethod
+    def _screen(app, groups, busy):
+        screen = app.screen
+        screen._instance_groups = groups
+        screen._busy_projects = lambda: busy
+        return screen
+
+    async def _rendered(self, tmp_path, groups, busy):
+        from textual.widgets import Static
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.tui.theme import Palette
+
+        app = CswapApp(
+            FakeSwitcher([make_account(1, active=True)], tmp_path), start="fleet"
+        )
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            screen = self._screen(app, groups, busy)
+            screen._render_instances(Palette.DARK)
+            rendered = app.screen.query_one("#fleet-instances", Static).render()
+            return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+    GROUPS = [
+        ("CLI", "~/Server/proj", "/home/me/Server/proj", 3),
+        ("CLI", "~/Server/other", "/home/me/Server/other", 1),
+    ]
+
+    async def test_a_spending_project_is_marked_working(
+        self, tmp_path, fake_fleet_engine
+    ):
+        text = await self._rendered(
+            tmp_path, self.GROUPS, {"-home-me-Server-proj"}
+        )
+        working = next(l for l in text.split("\n") if "~/Server/proj" in l)
+        idle = next(l for l in text.split("\n") if "~/Server/other" in l)
+        assert "working" in working, working
+        assert "working" not in idle, idle
+
+    async def test_the_path_is_matched_by_encoding_not_decoding(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A path maps to exactly one transcript directory name; decoding is
+        ambiguous the moment a directory has a dash in it."""
+        groups = [("CLI", "~/x/EndRod-paper-folia", "/home/me/x/EndRod-paper-folia", 1)]
+        text = await self._rendered(
+            tmp_path, groups, {"-home-me-x-EndRod-paper-folia"}
+        )
+        assert "working" in text, text
+
+    async def test_an_idle_fleet_shows_no_spinner(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """A spinner that never stops says "busy" about an idle machine."""
+        text = await self._rendered(tmp_path, self.GROUPS, set())
+        assert "working" not in text
+        assert not any(g in text for g in "✻✽✳✢"), text
+
+    async def test_it_survives_having_no_instances(
+        self, tmp_path, fake_fleet_engine
+    ):
+        assert await self._rendered(tmp_path, [], set()) == ""
+
+
+@pytest.mark.asyncio
 class TestHeadlineNamesTheLimit:
     """"47 pts" summed percentages of different pools — a number with no unit.
 

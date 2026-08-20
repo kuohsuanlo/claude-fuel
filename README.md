@@ -378,6 +378,15 @@ gates on a model the moment it is **selected**, before anything is spent. A
 model that is *running* gates whatever the setting says, which covers a
 session started with its own `--model`. Either is enough; the two are unioned.
 
+**The instances list says which sessions are working.** Every one of them
+spends the same active account, so arming the engine moves all of them at
+once — and one unrelated session on a model is enough to pin that model's
+window and make every account exhausted on it read as unusable. A spending
+project gets Claude Code's own idle-star spinner and the word `working`; an
+idle one gets a static dot. The join runs path → transcript directory (each
+path encodes to exactly one name), never the other way, because decoding is
+ambiguous the moment a directory has a dash in it.
+
 **A limit that becomes relevant is not waited on.** The engine's cadence is
 tied to the usage endpoint's budget — about one fetch a minute — but noticing
 that a model started running costs no API call at all: the settings file and
@@ -495,7 +504,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2339 tests
+uv run pytest -q                       # 2343 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

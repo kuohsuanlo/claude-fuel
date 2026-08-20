@@ -104,6 +104,17 @@ _JOIN = "┃"
 # what stops me in the next few hours, what stops me this week, and what stops
 # the model I actually use. `None` means "whatever per-model windows the
 # accounts report", resolved at render time.
+#: Claude Code's own idle-star cycle. Borrowed on purpose: the reader already
+#: reads this shape as "a session is working", and inventing a second vocabulary
+#: for the same fact would make them learn it twice.
+_SPINNER = ("✻", "✽", "✳", "✢", "·", "✢", "✳", "✽")
+
+#: A project counts as RUNNING if it has spent anything in this window. Short,
+#: because the question is "is something happening now", not "has this project
+#: been used lately" — the same distinction that made the gating window wrong.
+_INSTANCE_ACTIVE_WINDOW_S = 90.0
+
+
 def _project_label(encoded: str) -> str:
     """``-home-logocat-Server-x`` -> ``x``.
 
@@ -182,6 +193,9 @@ class FleetScreen(Screen):
         # The gating set as of the last display tick, so a WIDENING can be
         # spotted the second it happens. None until the first tick.
         self._gating_seen: frozenset[str] | None = None
+        # (label, shown path, real path, count) — refreshed on the display
+        # tick because process inspection is far too slow for frame rate.
+        self._instance_groups: list[tuple[str, str, str, int]] = []
 
     def compose(self) -> ComposeResult:
         # The pet sits in its own column on the RIGHT. Below the gauges it
@@ -674,7 +688,11 @@ class FleetScreen(Screen):
         if self._ticks % every == 0:
             self._display_tick()
         else:
-            self._render_status(Palette.from_theme(self.app.current_theme))
+            palette = Palette.from_theme(self.app.current_theme)
+            self._render_status(palette)
+            # Cheap: the groups are cached by the display tick, so this only
+            # re-lays the text and advances the spinner.
+            self._render_instances(palette)
 
     def _status_line(self, palette: Palette) -> Text:
         """The latest engine event, or what the screen is doing instead."""
@@ -1301,6 +1319,44 @@ class FleetScreen(Screen):
             text.append(handover)
         target.update(text)
 
+    def _less_capable_numbers(self, segments) -> set[str]:
+        """Accounts the engine may take WITHOUT waiting for the risk axis.
+
+        Mirrors the engine's own rule: an account whose idle-model windows are
+        already spent destroys nothing by being used, so it skips the gate the
+        handover projection is a countdown to.
+        """
+        snapshot = self.app.snapshot
+        if snapshot is None:
+            return set()
+        usage = {a.number: a.usage.last_good for a in snapshot.accounts}
+        active = next((seg for seg in segments if seg.is_active), None)
+        if active is None:
+            return set()
+        gating = {name.lower() for name in self._models()}
+
+        def capability(value) -> int:
+            if not self._declared_models():
+                return 0
+            return sum(
+                1
+                for name, pct, _reset in oauth.relevant_windows(
+                    value if isinstance(value, dict) else None, ("all",)
+                )
+                if name not in ("5h", "7d")
+                and name.lower() not in gating
+                and pct < 100.0
+            )
+
+        mine = capability(usage.get(active.number))
+        return {
+            seg.number
+            for seg in segments
+            if not seg.is_active
+            and seg.headroom_pct > 0
+            and capability(usage.get(seg.number)) < mine
+        }
+
     def _handover_note(self, estimate, palette: Palette) -> Text | None:
         """Which account gets the next turn, and whether its quota survives.
 
@@ -1327,9 +1383,15 @@ class FleetScreen(Screen):
         active = next((seg for seg in segments if seg.is_active), None)
         if active is None:
             return None
+        # A CANDIDATE THAT ALREADY QUALIFIES HAS NO ETA. The projection solves
+        # when the risk axis crosses, and the capability shortcut bypasses that
+        # axis entirely — so an account holding model-less quota was reported
+        # as taking over in four days while the engine was about to move to it
+        # on the next tick.
+        capable_now = self._less_capable_numbers(segments)
         soonest: tuple[float, fleet.FleetSegment] | None = None
         for segment in segments:
-            if segment.is_active:
+            if segment.is_active or segment.number in capable_now:
                 continue
             hours = fleet.handover_eta_h(
                 active, segment, now,
@@ -1472,21 +1534,16 @@ class FleetScreen(Screen):
                 )
                 text.append(line, style=palette.muted)
         target.update(text)
-        instances = Text(no_wrap=True, overflow="ellipsis")
-        self._append_running_instances(instances, palette)
-        try:
-            self.query_one("#fleet-instances", Static).update(instances)
-        except Exception:
-            pass
+        self._instance_groups = self._collect_running_instances()
+        self._render_instances(palette)
 
     @staticmethod
-    def _append_running_instances(text: Text, palette: Palette) -> None:
-        """Which sessions are sharing the account, grouped as `cfuel list` does.
+    def _collect_running_instances() -> list[tuple[str, str, str, int]]:
+        """``(label, shown path, real path, count)`` per group.
 
-        Load-bearing rather than decorative: every one of these is spending
-        the SAME active account, so "switch" means switching all of them at
-        once. A reader deciding whether to arm the engine needs to know how
-        many things that would move.
+        Split from the drawing because process inspection is far too expensive
+        to repeat at animation rate, while the spinner beside each row has to
+        move at it. Refreshed once per display tick; drawn every frame.
         """
         try:
             from claude_swap.printer import abbreviate_path, entrypoint_label
@@ -1494,23 +1551,76 @@ class FleetScreen(Screen):
 
             sessions, ides = get_running_instances()
         except Exception:
-            return  # process inspection is best-effort; never break the view
-        groups: dict[tuple[str, str], int] = {}
+            return []  # process inspection is best-effort; never break the view
+        groups: dict[tuple[str, str, str], int] = {}
         for session in sessions:
-            key = (entrypoint_label(session.entrypoint), abbreviate_path(session.cwd))
+            key = (
+                entrypoint_label(session.entrypoint),
+                abbreviate_path(session.cwd),
+                str(session.cwd),
+            )
             groups[key] = groups.get(key, 0) + 1
         for ide in ides:
             for folder in getattr(ide, "workspace_folders", []) or []:
-                key = (getattr(ide, "ide_name", "IDE"), abbreviate_path(folder))
+                key = (
+                    getattr(ide, "ide_name", "IDE"),
+                    abbreviate_path(folder),
+                    str(folder),
+                )
                 groups[key] = groups.get(key, 0) + 1
+        return [(a, b, c, n) for (a, b, c), n in groups.items()]
+
+    def _busy_projects(self) -> set[str]:
+        """Encoded project names that have spent tokens in the last while.
+
+        Claude Code names a transcript directory after the project path with
+        the separators replaced by dashes, so the join runs in that direction
+        — a path maps to exactly one encoded name, while decoding is ambiguous
+        the moment a directory has a dash in it (``EndRod-paper-folia``).
+        """
+        if self._sensor is None:
+            return set()
+        try:
+            sources = self._sensor.recent_sources(_INSTANCE_ACTIVE_WINDOW_S)
+        except Exception:  # pragma: no cover - sensing must never break a paint
+            return set()
+        return {name for name, tokens in sources if tokens > 0}
+
+    def _render_instances(self, palette: Palette) -> None:
+        """Which sessions are sharing the account, and which are working.
+
+        Load-bearing rather than decorative: every one of these is spending
+        the SAME active account, so "switch" means switching all of them at
+        once. A reader deciding whether to arm the engine needs to know how
+        many things that would move — and, since one unrelated session can
+        pin a per-model window, WHICH of them is actually running.
+        """
+        groups = getattr(self, "_instance_groups", None)
         if not groups:
             return
+        busy = self._busy_projects()
+        text = Text(no_wrap=True, overflow="ellipsis")
         text.append("Running instances:", style=f"bold {palette.foreground}")
-        for (label, cwd), count in groups.items():
+        for label, shown, real, count in groups:
+            working = real.replace("/", "-") in busy
             text.append("\n  ")
-            text.append("● ", style=palette.track)
+            if working:
+                # Animated only while there is something to animate: a spinner
+                # that never stops says "busy" about an idle machine.
+                glyph = _SPINNER[(self._ticks // 2) % len(_SPINNER)]
+                text.append(f"{glyph} ", style=palette.accent)
+            else:
+                text.append("· ", style=palette.track)
             text.append(f"{label}   ", style=palette.muted)
-            text.append(cwd, style=palette.muted)
+            text.append(
+                shown, style=palette.foreground if working else palette.muted
+            )
             text.append(
                 f"  ({count} session{'s' if count > 1 else ''})", style=palette.track
             )
+            if working:
+                text.append("  working", style=palette.accent)
+        try:
+            self.query_one("#fleet-instances", Static).update(text)
+        except Exception:
+            pass

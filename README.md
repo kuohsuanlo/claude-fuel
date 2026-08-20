@@ -250,6 +250,14 @@ you launched `cfuel` from. The effective trigger becomes the lower of your
 threshold and the value the current rate can survive. **It can only ever switch
 earlier than you asked.**
 
+**`r` only ever tightens.** The suggestion is the *highest* trigger the
+current rate can survive, so adopting it on a quiet machine would RAISE the
+threshold — an idle reading suggests 99, and one keypress would hand back the
+reserve of a user who had deliberately set 94. The engine already takes the
+lower of the two every tick, so the only useful thing the key can do is make
+the stored value tighter; a suggestion above the current setting is reported
+and ignored.
+
 **The reserve is a full engine tick, plus a floor.** The window is not a guess
 at how long a switch takes — every tick may fetch usage, and that endpoint
 admits ~28–30 requests an hour per identity (it costs no tokens; the limit is
@@ -378,14 +386,23 @@ gates on a model the moment it is **selected**, before anything is spent. A
 model that is *running* gates whatever the setting says, which covers a
 session started with its own `--model`. Either is enough; the two are unioned.
 
-**The instances list says which sessions are working.** Every one of them
-spends the same active account, so arming the engine moves all of them at
-once — and one unrelated session on a model is enough to pin that model's
-window and make every account exhausted on it read as unusable. A spending
-project gets Claude Code's own idle-star spinner and the word `working`; an
-idle one gets a static dot. The join runs path → transcript directory (each
-path encodes to exactly one name), never the other way, because decoding is
-ambiguous the moment a directory has a dash in it.
+**The session list names them and says which are working.**
+
+```
+Sessions (9 on this account):
+  ✻ cswap              busy     ~/Server/claude-sandbox
+  ✻ kenshi-zone-mc     busy     ~/Server/claude-sandbox
+  · grimac-reloaded    idle     ~/Server/claude-sandbox
+  · endrod             shell    ~/Server/claude-sandbox/EndRod-paper-folia
+```
+
+Every one of them spends the same active account, so arming the engine moves
+all of them at once — and one unrelated session on a model is enough to pin
+that model's window and make every account exhausted on it read as unusable.
+The name is the title you gave the session, read from its transcript; a
+session id is not a name. `status` is Claude Code's own, not inferred from
+token traffic. Busy sessions sort first and carry the idle-star spinner, so
+the row that explains a pinned window is at the top.
 
 **A limit that becomes relevant is not waited on.** The engine's cadence is
 tied to the usage endpoint's budget — about one fetch a minute — but noticing
@@ -504,7 +521,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2343 tests
+uv run pytest -q                       # 2345 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

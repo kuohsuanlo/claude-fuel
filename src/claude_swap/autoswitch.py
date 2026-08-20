@@ -1226,6 +1226,19 @@ class AutoSwitchEngine:
         # Refreshed before anything reads self._models, and headroom recomputed
         # with it, so the reachability test and the ranking never disagree
         # about which windows exist.
+        # READ THE TRANSCRIPTS FIRST. The gating decision below asks "which
+        # models are running", and the sensor was only polled later, inside
+        # `_effective_threshold` — so this ran on the previous tick's data, and
+        # on the FIRST tick on none at all. No data reads as an idle machine,
+        # which deliberately keeps every declared window gating, so an account
+        # whose model window is spent stayed unusable and was escaped away
+        # from. The view has its own sensor and polls every second, which is
+        # why it said "not running" while the engine disagreed.
+        if self._burn is not None:
+            try:
+                self._burn.sensor.poll()
+            except Exception:  # pragma: no cover - sensing must never break a tick
+                pass
         if self._refresh_gating_models(settings, usage):
             headroom = _headroom_by_account(usage, self._models)
         # Computed before the poll event so the line the user reads names the

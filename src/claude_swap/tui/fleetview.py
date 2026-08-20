@@ -115,6 +115,41 @@ _SPINNER = ("✻", "✽", "✳", "✢", "·", "✢", "✳", "✽")
 _INSTANCE_ACTIVE_WINDOW_S = 90.0
 
 
+def _session_titles() -> dict[str, str]:
+    """``session id -> the name you gave it``, from Claude Code's transcripts.
+
+    A session id is not a name. Claude Code records the title as a
+    ``custom-title`` line, so only the tail of each transcript is read — the
+    record is rewritten on every rename, and the newest wins.
+    """
+    import json
+
+    from claude_swap.paths import get_claude_config_home
+
+    titles: dict[str, str] = {}
+    try:
+        paths = list((get_claude_config_home() / "projects").glob("*/*.jsonl"))
+    except OSError:
+        return titles
+    for path in paths:
+        try:
+            with path.open("rb") as handle:
+                handle.seek(max(0, path.stat().st_size - 200_000))
+                for raw in handle:
+                    if b'"custom-title"' not in raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    title = record.get("customTitle")
+                    if record.get("type") == "custom-title" and isinstance(title, str):
+                        titles[path.stem] = title.strip()
+        except OSError:
+            continue
+    return titles
+
+
 def _project_label(encoded: str) -> str:
     """``-home-logocat-Server-x`` -> ``x``.
 
@@ -525,14 +560,33 @@ class FleetScreen(Screen):
         )
 
     def action_apply_recommended(self) -> None:
-        """Adopt the threshold the measured burn rate implies."""
+        """Adopt the threshold the measured burn rate implies — DOWNWARD ONLY.
+
+        The suggestion is the HIGHEST trigger the current rate can survive, so
+        adopting it on a quiet machine RAISES the threshold: an idle reading
+        recommends 99, and a user who had deliberately set 94 would hand back
+        five points of reserve by pressing one key. The engine already takes
+        the lower of the two every tick, so the only thing this key can
+        usefully do is make the stored value tighter.
+
+        A suggestion above the current setting is not an error, and the burn
+        line already renders it calmly rather than prompting for it — this
+        just refuses to act on it.
+        """
         estimate = self._estimate()
         recommended = estimate.recommended_threshold() if estimate else None
         if recommended is None:
             self._log_note("no burn measured yet — nothing to suggest")
             return
         spec = SETTING_SPECS["autoswitch.threshold"]
-        self._commit_threshold(min(spec.hi, max(spec.lo, round(recommended, 1))))
+        value = min(spec.hi, max(spec.lo, round(recommended, 1)))
+        if self._settings is not None and value >= self._settings.threshold:
+            self._log_note(
+                f"suggested {pct_label(value)}% is not tighter than yours "
+                f"({pct_label(self._settings.threshold)}%) — left alone"
+            )
+            return
+        self._commit_threshold(value)
 
     def _commit_threshold(self, value: float) -> None:
         """Set the threshold everywhere it is read, and write it to disk.
@@ -1538,88 +1592,78 @@ class FleetScreen(Screen):
         self._render_instances(palette)
 
     @staticmethod
-    def _collect_running_instances() -> list[tuple[str, str, str, int]]:
-        """``(label, shown path, real path, count)`` per group.
+    def _collect_running_instances() -> list[tuple[str, str, str, str]]:
+        """``(name, status, project, session id)`` per live session.
+
+        PER SESSION, not a count. They all spend the SAME active account, so a
+        reader deciding whether to arm the engine wants to know WHICH of them
+        would move — and, since one session on a model pins that model's
+        window for the whole fleet, which one is responsible.
+
+        ``status`` comes from Claude Code's own session records rather than
+        from token traffic: it is the authoritative answer to "is this one
+        working", where recent spend is only an inference.
 
         Split from the drawing because process inspection is far too expensive
-        to repeat at animation rate, while the spinner beside each row has to
-        move at it. Refreshed once per display tick; drawn every frame.
+        to repeat at animation rate, while the spinner beside each row moves at
+        it.
         """
         try:
-            from claude_swap.printer import abbreviate_path, entrypoint_label
+            from claude_swap.printer import abbreviate_path
             from claude_swap.process_detection import get_running_instances
 
-            sessions, ides = get_running_instances()
+            sessions, _ides = get_running_instances()
         except Exception:
             return []  # process inspection is best-effort; never break the view
-        groups: dict[tuple[str, str, str], int] = {}
+        titles = _session_titles()
+        rows: list[tuple[str, str, str, str]] = []
         for session in sessions:
-            key = (
-                entrypoint_label(session.entrypoint),
-                abbreviate_path(session.cwd),
-                str(session.cwd),
-            )
-            groups[key] = groups.get(key, 0) + 1
-        for ide in ides:
-            for folder in getattr(ide, "workspace_folders", []) or []:
-                key = (
-                    getattr(ide, "ide_name", "IDE"),
-                    abbreviate_path(folder),
-                    str(folder),
+            sid = getattr(session, "session_id", "") or ""
+            rows.append(
+                (
+                    titles.get(sid) or (sid[:8] if sid else "session"),
+                    str(getattr(session, "status", "") or ""),
+                    abbreviate_path(str(session.cwd)),
+                    sid,
                 )
-                groups[key] = groups.get(key, 0) + 1
-        return [(a, b, c, n) for (a, b, c), n in groups.items()]
-
-    def _busy_projects(self) -> set[str]:
-        """Encoded project names that have spent tokens in the last while.
-
-        Claude Code names a transcript directory after the project path with
-        the separators replaced by dashes, so the join runs in that direction
-        — a path maps to exactly one encoded name, while decoding is ambiguous
-        the moment a directory has a dash in it (``EndRod-paper-folia``).
-        """
-        if self._sensor is None:
-            return set()
-        try:
-            sources = self._sensor.recent_sources(_INSTANCE_ACTIVE_WINDOW_S)
-        except Exception:  # pragma: no cover - sensing must never break a paint
-            return set()
-        return {name for name, tokens in sources if tokens > 0}
+            )
+        # Working first, then by name: the row that explains a pinned model
+        # window belongs at the top, not wherever the OS happened to list it.
+        rows.sort(key=lambda row: (row[1] != "busy", row[0].lower()))
+        return rows
 
     def _render_instances(self, palette: Palette) -> None:
-        """Which sessions are sharing the account, and which are working.
-
-        Load-bearing rather than decorative: every one of these is spending
-        the SAME active account, so "switch" means switching all of them at
-        once. A reader deciding whether to arm the engine needs to know how
-        many things that would move — and, since one unrelated session can
-        pin a per-model window, WHICH of them is actually running.
-        """
-        groups = getattr(self, "_instance_groups", None)
-        if not groups:
+        """Which sessions share the account, by name, and which are working."""
+        rows = getattr(self, "_instance_groups", None)
+        if not rows:
             return
-        busy = self._busy_projects()
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append("Running instances:", style=f"bold {palette.foreground}")
-        for label, shown, real, count in groups:
-            working = real.replace("/", "-") in busy
+        text.append(
+            f"Sessions ({len(rows)} on this account):",
+            style=f"bold {palette.foreground}",
+        )
+        width = max(len(name) for name, _s, _p, _i in rows)
+        for name, status, project, _sid in rows:
+            working = status == "busy"
             text.append("\n  ")
             if working:
                 # Animated only while there is something to animate: a spinner
                 # that never stops says "busy" about an idle machine.
-                glyph = _SPINNER[(self._ticks // 2) % len(_SPINNER)]
-                text.append(f"{glyph} ", style=palette.accent)
+                text.append(
+                    _SPINNER[(self._ticks // 2) % len(_SPINNER)] + " ",
+                    style=palette.accent,
+                )
             else:
                 text.append("· ", style=palette.track)
-            text.append(f"{label}   ", style=palette.muted)
             text.append(
-                shown, style=palette.foreground if working else palette.muted
+                f"{name:<{width}}  ",
+                style=palette.foreground if working else palette.muted,
             )
             text.append(
-                f"  ({count} session{'s' if count > 1 else ''})", style=palette.track
+                f"{status:<7}",
+                style=palette.accent if working else palette.track,
             )
-            if working:
-                text.append("  working", style=palette.accent)
+            text.append(f"  {project}", style=palette.track)
         try:
             self.query_one("#fleet-instances", Static).update(text)
         except Exception:

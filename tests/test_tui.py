@@ -2472,21 +2472,16 @@ class TestGaugesShowOnlyWhatTheEngineReads:
 
 @pytest.mark.asyncio
 class TestRunningInstancesShowActivity:
-    """Which sessions are working, not merely how many exist.
+    """Sessions by NAME, with the status Claude Code itself reports.
 
-    One unrelated session can pin a per-model window and make every account
-    exhausted on that model read as unusable. That was invisible: the list
-    counted sessions and said nothing about which were spending.
+    The list counted sessions and said nothing about which were spending. That
+    matters because one unrelated session on a model pins that model's window
+    and every account exhausted on it then reads as unusable — the confusion
+    reported repeatedly. A session id is not a name either; the transcripts
+    carry the title the user gave it.
     """
 
-    @staticmethod
-    def _screen(app, groups, busy):
-        screen = app.screen
-        screen._instance_groups = groups
-        screen._busy_projects = lambda: busy
-        return screen
-
-    async def _rendered(self, tmp_path, groups, busy):
+    async def _rendered(self, tmp_path, rows):
         from textual.widgets import Static
 
         from claude_swap.tui.app import CswapApp
@@ -2497,50 +2492,78 @@ class TestRunningInstancesShowActivity:
         )
         async with app.run_test(size=(140, 46)) as pilot:
             await settle(pilot)
-            screen = self._screen(app, groups, busy)
-            screen._render_instances(Palette.DARK)
+            app.screen._instance_groups = rows
+            app.screen._render_instances(Palette.DARK)
             rendered = app.screen.query_one("#fleet-instances", Static).render()
             return rendered.plain if hasattr(rendered, "plain") else str(rendered)
 
-    GROUPS = [
-        ("CLI", "~/Server/proj", "/home/me/Server/proj", 3),
-        ("CLI", "~/Server/other", "/home/me/Server/other", 1),
+    ROWS = [
+        ("kenshi-zone-mc", "busy", "~/Server/proj", "21aecf40"),
+        ("grimac-reloaded", "idle", "~/Server/other", "58802e6c"),
     ]
 
-    async def test_a_spending_project_is_marked_working(
+    async def test_it_names_each_session_and_its_status(
         self, tmp_path, fake_fleet_engine
     ):
-        text = await self._rendered(
-            tmp_path, self.GROUPS, {"-home-me-Server-proj"}
-        )
-        working = next(l for l in text.split("\n") if "~/Server/proj" in l)
-        idle = next(l for l in text.split("\n") if "~/Server/other" in l)
-        assert "working" in working, working
-        assert "working" not in idle, idle
+        text = await self._rendered(tmp_path, self.ROWS)
+        assert "kenshi-zone-mc" in text and "grimac-reloaded" in text, text
+        assert "busy" in text and "idle" in text, text
+        assert "Sessions (2 on this account)" in text, text
 
-    async def test_the_path_is_matched_by_encoding_not_decoding(
+    async def test_a_busy_session_gets_the_spinner(
         self, tmp_path, fake_fleet_engine
     ):
-        """A path maps to exactly one transcript directory name; decoding is
-        ambiguous the moment a directory has a dash in it."""
-        groups = [("CLI", "~/x/EndRod-paper-folia", "/home/me/x/EndRod-paper-folia", 1)]
-        text = await self._rendered(
-            tmp_path, groups, {"-home-me-x-EndRod-paper-folia"}
-        )
-        assert "working" in text, text
+        text = await self._rendered(tmp_path, self.ROWS)
+        busy = next(l for l in text.split("\n") if "kenshi-zone-mc" in l)
+        idle = next(l for l in text.split("\n") if "grimac-reloaded" in l)
+        assert any(g in busy for g in "✻✽✳✢"), busy
+        assert idle.strip().startswith("·"), idle
 
     async def test_an_idle_fleet_shows_no_spinner(
         self, tmp_path, fake_fleet_engine
     ):
         """A spinner that never stops says "busy" about an idle machine."""
-        text = await self._rendered(tmp_path, self.GROUPS, set())
-        assert "working" not in text
-        assert not any(g in text for g in "✻✽✳✢"), text
+        text = await self._rendered(
+            tmp_path, [("a", "idle", "~/x", "1"), ("b", "shell", "~/y", "2")]
+        )
+        assert not any(g in text for g in "✻✽✳"), text
 
-    async def test_it_survives_having_no_instances(
+    async def test_it_survives_having_no_sessions(
         self, tmp_path, fake_fleet_engine
     ):
-        assert await self._rendered(tmp_path, [], set()) == ""
+        assert await self._rendered(tmp_path, []) == ""
+
+    def test_a_session_without_a_title_falls_back_to_its_id(self):
+        """Never blank: an unnamed session still has to be countable."""
+        from claude_swap.tui.fleetview import FleetScreen
+        from unittest.mock import patch
+
+        class Session:
+            session_id = "e69074c1-1234"
+            status = "idle"
+            cwd = "/home/me/x"
+            entrypoint = "cli"
+
+        with patch("claude_swap.process_detection.get_running_instances",
+                   return_value=([Session()], [])), \
+             patch("claude_swap.tui.fleetview._session_titles", return_value={}):
+            rows = FleetScreen._collect_running_instances()
+        assert rows and rows[0][0] == "e69074c1"
+
+    def test_busy_sessions_sort_first(self):
+        from claude_swap.tui.fleetview import FleetScreen
+        from unittest.mock import patch
+
+        def session(sid, status):
+            return type("S", (), {"session_id": sid, "status": status,
+                                  "cwd": "/home/me/x", "entrypoint": "cli"})()
+
+        with patch("claude_swap.process_detection.get_running_instances",
+                   return_value=([session("a", "idle"), session("b", "busy")], [])), \
+             patch("claude_swap.tui.fleetview._session_titles",
+                   return_value={"a": "aaa", "b": "zzz"}):
+            rows = FleetScreen._collect_running_instances()
+        assert [r[0] for r in rows] == ["zzz", "aaa"], rows
 
 
 @pytest.mark.asyncio

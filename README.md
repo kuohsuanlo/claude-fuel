@@ -401,6 +401,30 @@ hardcoded `all` while the ranking read the setting, which is how a Fable bar
 at 100% came to sit above an engine that could not see it — the one thing a
 fuel gauge must never do.
 
+### Capability is spent last
+
+An account whose Fable window is exhausted can only ever absorb non-Fable work.
+One with Fable intact can absorb either. So running an Opus turn on the second
+destroys quota that only *it* could have served, while the same turn on the
+first destroys none.
+
+The engine therefore will not leave a less capable account for a more capable
+one while the less capable one can still absorb work, and ranks the least
+capable first among the candidates that qualify. This is a dominance argument,
+not a tuned preference — draining the spent account first is never worse, and
+is better the moment a task needs the model you kept.
+
+It lifts in two places, both necessary:
+
+- **When the model is actually running.** Both accounts then serve the work at
+  hand equally and the ordinary waste ranking decides.
+- **When the candidate's own quota expires within a day.** Use-it-or-lose-it
+  beats keeping a window intact for a task that may never come.
+
+Caught live: with Fable idle, the fleet wanted to move off an account holding
+14 points of Opus-only quota onto one holding 39 points that could serve either
+— exactly backwards.
+
 ### Plan sizes
 
 The usage API reports only utilization, so 40% of a 20× plan and 40% of a 5×
@@ -464,7 +488,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2333 tests
+uv run pytest -q                       # 2337 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

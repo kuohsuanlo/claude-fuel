@@ -158,6 +158,11 @@ HORIZON_HEADROOM_RATIO = 2.0
 # whichever account we happen to hold.
 SPENT_HEADROOM_PCT = 3.0
 
+# How near a candidate's own reset has to be for USE-IT-OR-LOSE-IT to override
+# the capability preference below. Quota that expires today is worth more than
+# keeping a model's window intact for a task that may never come.
+CAPABILITY_OVERRIDE_HORIZON_S = 24 * 3600.0
+
 # Triggers that fire while the active account is still USABLE — they optimise
 # where we sit rather than escape somewhere dead. Every anti-flap guard
 # (cooldown, the no-return bar, the healthy-landing rule) applies to exactly
@@ -2116,6 +2121,32 @@ class AutoSwitchEngine:
             < was - RECOVERY_HYSTERESIS_S
         )
 
+    def _idle_capability(self, value: object) -> int:
+        """How many models this account could still serve that are NOT running.
+
+        The scarce thing is not quota, it is quota that can serve work you have
+        not asked for yet. An account whose Fable window is spent can only ever
+        absorb non-Fable work; one with Fable intact can absorb either. Running
+        Opus on the second destroys a capability the first never had.
+
+        So this counts what would be LOST by spending here, and the ranking
+        prefers the account with the least to lose. It is a dominance argument,
+        not a tuned preference: draining the spent-capability account first is
+        never worse and is better the moment a Fable task arrives.
+        """
+        if not self._declared_models:
+            return 0
+        gating = {name.lower() for name in self._models}
+        count = 0
+        for name, pct, _reset in oauth.relevant_windows(
+            value if isinstance(value, dict) else None, ("all",)
+        ):
+            if name in ACCOUNT_WIDE_WINDOWS or name.lower() in gating:
+                continue
+            if pct < 100.0:
+                count += 1
+        return count
+
     def _landing_margin(self, settings: AutoSwitchSettings, current: str) -> float:
         """Headroom a destination must have to be worth switching to.
 
@@ -2175,6 +2206,9 @@ class AutoSwitchEngine:
         # that is barely at risk itself from displacing it.
         active_risk = (
             waste_risk(usage.get(current), self._models, now) if waste_first else None
+        )
+        active_capability = (
+            self._idle_capability(usage.get(current)) if waste_first else None
         )
         # When NOTHING is below the threshold — the active account and every
         # candidate all in the 90s — "land somewhere healthy" has no answer,
@@ -2251,7 +2285,12 @@ class AutoSwitchEngine:
             if num == no_return:
                 continue  # the account we just left; see _no_return_account
             reset_ts = (
-                _seven_day_reset_ts(usage.get(num), now) if consume_first else None
+                # waste-first needs it too: the capability rule below lifts for
+                # a candidate whose quota is about to expire, and without the
+                # timestamp that exception could never fire.
+                _seven_day_reset_ts(usage.get(num), now)
+                if (consume_first or waste_first)
+                else None
             )
             risk = waste_risk(usage.get(num), self._models, now) if waste_first else None
             recovery_ts = (
@@ -2337,6 +2376,28 @@ class AutoSwitchEngine:
                         WASTE_MIN_RISK_PCT_PER_H,
                     ):
                         continue
+                    # DO NOT TRADE A SPENT CAPABILITY FOR AN INTACT ONE. While
+                    # the account we are on can still absorb work AND has less
+                    # left to lose than this candidate, moving spends the
+                    # scarcer resource first — an Opus turn on an account whose
+                    # Fable is intact destroys quota that only that account
+                    # could have served, while the same turn here destroys none.
+                    #
+                    # Lifted when the candidate's own quota is about to expire:
+                    # use-it-or-lose-it beats keeping a window intact for a task
+                    # that may never come. Proactive only — an escape has no
+                    # choice and never reaches this branch.
+                    if (
+                        active_capability is not None
+                        and self._idle_capability(usage.get(num))
+                        > active_capability
+                        and (active_headroom or 0.0) > landing_margin
+                        and not (
+                            reset_ts is not None
+                            and reset_ts - now <= CAPABILITY_OVERRIDE_HORIZON_S
+                        )
+                    ):
+                        continue
                 elif consume_first:
                     # Purely proactive on reset ordering: below the threshold,
                     # only move to accounts whose weekly window resets sooner
@@ -2380,11 +2441,18 @@ class AutoSwitchEngine:
                     (0, recovery_ts, -h) if by_recovery else (1, -h, recovery_ts)
                 )
             elif waste_first:
-                # Most-at-risk first; headroom breaks ties, then sequence
-                # order. Unknown risk sorts last rather than being dropped:
-                # above the threshold this same key ranks an ESCAPE, where any
-                # usable account beats staying on a spent one.
-                key = (-(risk if risk is not None else -1.0), -h)
+                # LEAST LEFT TO LOSE FIRST, then most-at-risk, then headroom.
+                # Capability leads for the same dominance reason the gate above
+                # uses: spending an account whose model windows are already
+                # spent destroys nothing that another account could not also
+                # have served. Unknown risk sorts last rather than being
+                # dropped: above the threshold this same key ranks an ESCAPE,
+                # where any usable account beats staying on a spent one.
+                key = (
+                    self._idle_capability(usage.get(num)),
+                    -(risk if risk is not None else -1.0),
+                    -h,
+                )
             elif consume_first:
                 # Soonest weekly reset first (unknown resets sort last), most
                 # headroom breaks ties, then sequence order.

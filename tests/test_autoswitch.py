@@ -2661,6 +2661,91 @@ class TestLandingMargin:
         assert h.active_number() == 2
 
 
+class TestCapabilityIsSpentLast:
+    """Drain the account that has already lost a model, not the one that has not.
+
+    Running Opus on an account whose Fable window is intact destroys quota only
+    that account could have served; the same turn on an account whose Fable is
+    already spent destroys none. Draining the spent one first is never worse,
+    and is better the moment a Fable task arrives.
+    """
+
+    def _seed(self, temp_home: Path, **kw) -> EngineHarness:
+        kw.setdefault("threshold", 99.0)
+        h = EngineHarness(temp_home, strategy="waste-first", model="all", **kw)
+        for number, email in ((1, "a@example.com"), (2, "b@example.com")):
+            h.seed(number, email)
+        h.make_live("a@example.com", 1)
+        h.engine._burn = None       # no burst guard interference
+        h.engine._models = ()       # Fable measured as NOT running
+        return h
+
+    def _fleet(self, h: EngineHarness, *, active_seven: float) -> dict:
+        now = h.clock()
+        def usage(seven, fable, hours):
+            return {
+                "five_hour": {"pct": 5.0, "resets_at": _iso_at(now + 3 * 3600)},
+                "seven_day": {"pct": seven, "resets_at": _iso_at(now + hours * 3600)},
+                "scoped": [{"name": "Fable", "pct": fable,
+                            "resets_at": _iso_at(now + hours * 3600)}],
+            }
+        return {
+            # active: Fable already spent, so its weekly quota is Opus-only
+            "1": usage(active_seven, 100.0, 120.0),
+            # candidate: more weekly quota AND an intact Fable window
+            "2": usage(20.0, 20.0, 120.0),
+        }
+
+    def test_it_stays_on_the_account_that_has_nothing_left_to_lose(
+        self, temp_home
+    ):
+        """The live case: #2 wins on raw waste risk, but taking it would burn
+        Fable-capable quota to do Opus work."""
+        h = self._seed(temp_home)
+        outcome = h.tick_with_usage(self._fleet(h, active_seven=86.0))
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_it_moves_once_the_spent_account_is_drained(self, temp_home):
+        """The preference is bounded by usefulness — it holds only while the
+        less capable account can still absorb work."""
+        h = self._seed(temp_home)
+        outcome = h.tick_with_usage(self._fleet(h, active_seven=100.0))
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_expiring_quota_still_wins(self, temp_home):
+        """Use-it-or-lose-it beats keeping a window intact for a task that may
+        never come: a candidate resetting inside the horizon is taken anyway."""
+        h = self._seed(temp_home)
+        now = h.clock()
+        outcome = h.tick_with_usage({
+            "1": {
+                "five_hour": {"pct": 5.0, "resets_at": _iso_at(now + 3 * 3600)},
+                "seven_day": {"pct": 86.0, "resets_at": _iso_at(now + 120 * 3600)},
+                "scoped": [{"name": "Fable", "pct": 100.0,
+                            "resets_at": _iso_at(now + 120 * 3600)}],
+            },
+            "2": {   # resets in 6 hours with plenty unspent
+                "five_hour": {"pct": 5.0, "resets_at": _iso_at(now + 3 * 3600)},
+                "seven_day": {"pct": 20.0, "resets_at": _iso_at(now + 6 * 3600)},
+                "scoped": [{"name": "Fable", "pct": 20.0,
+                            "resets_at": _iso_at(now + 6 * 3600)}],
+            },
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_it_does_nothing_when_the_model_is_running(self, temp_home):
+        """With Fable actually in use both accounts are equally capable of the
+        work at hand, so the ordinary waste ranking decides."""
+        h = self._seed(temp_home)
+        h.engine._models = ("Fable",)
+        outcome = h.tick_with_usage(self._fleet(h, active_seven=86.0))
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+
 class TestMeasuredModelMix:
     """A per-model window gates only while that model is actually running."""
 

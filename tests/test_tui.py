@@ -2571,75 +2571,130 @@ class TestRunningInstancesShowActivity:
         assert [r[0] for r in rows] == ["zzz", "aaa"], rows
 
 
-class TestLifetimeSpend:
-    """What the plan has been squeezed for, read from Claude Code's own tally."""
+class TestLifetimeTokens:
+    """How much has gone through this machine, from the real record.
+
+    The first cut summed Claude Code's ``lastModelUsage``. Every field beside
+    it starts with ``last``: it holds the MOST RECENT SESSION for a project and
+    empties when a new one starts. It read like a lifetime figure, under-
+    reported this machine seventeen-fold, and shrank whenever a session
+    restarted.
+    """
 
     @staticmethod
-    def _write(tmp_path, payload):
+    def _transcripts(tmp_path, per_project):
         import json
 
-        (tmp_path / ".claude.json").write_text(json.dumps(payload), encoding="utf-8")
+        root = tmp_path / "projects"
+        for name, requests in per_project.items():
+            folder = root / name
+            folder.mkdir(parents=True, exist_ok=True)
+            with (folder / "s.jsonl").open("w", encoding="utf-8") as handle:
+                for output in requests:
+                    handle.write(json.dumps({
+                        "type": "assistant",
+                        "message": {"usage": {"output_tokens": output}},
+                    }) + "\n")
+        return tmp_path
 
-    def _spend(self, tmp_path, payload, monkeypatch):
+    def _sweep(self, tmp_path, per_project, monkeypatch):
         from claude_swap.tui import fleetview
 
-        self._write(tmp_path, payload)
+        self._transcripts(tmp_path, per_project)
         monkeypatch.setattr(
-            fleetview, "_lifetime_cache", (0.0, None), raising=False
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(fleetview, "_lifetime_stamp", 0.0, raising=False)
+        fleetview._sweep_lifetime()
+        return fleetview._lifetime_total, dict(fleetview._lifetime_by_project)
+
+    def test_it_totals_every_transcript(self, tmp_path, monkeypatch):
+        total, by_project = self._sweep(
+            tmp_path, {"-a": [10, 20], "-b": [5]}, monkeypatch
+        )
+        assert total == 35.0
+        assert by_project == {"-a": 30.0, "-b": 5.0}
+
+    def test_only_assistant_lines_with_usage_count(self, tmp_path, monkeypatch):
+        import json
+
+        root = tmp_path / "projects" / "-a"
+        root.mkdir(parents=True)
+        (root / "s.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"usage": {"output_tokens": 99}}})
+            + "\n"
+            + json.dumps({"type": "assistant", "message": {}})
+            + "\n"
+            + json.dumps({"type": "assistant",
+                          "message": {"usage": {"output_tokens": 7}}})
+            + "\n",
+            encoding="utf-8",
         )
         monkeypatch.setattr(
-            "claude_swap.paths.get_global_config_path",
-            lambda: tmp_path / ".claude.json",
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
         )
-        return fleetview.lifetime_spend()
-
-    def test_it_totals_every_project_and_model(self, tmp_path, monkeypatch):
-        spend = self._spend(tmp_path, {"projects": {
-            "/a": {"lastModelUsage": {
-                "opus": {"inputTokens": 10, "outputTokens": 20,
-                         "cacheReadInputTokens": 30,
-                         "cacheCreationInputTokens": 40, "costUSD": 1.5},
-            }},
-            "/b": {"lastModelUsage": {
-                "haiku": {"inputTokens": 1, "outputTokens": 2, "costUSD": 0.25},
-            }},
-        }}, monkeypatch)
-        assert spend == (103.0, 1.75)
-
-    def test_a_missing_or_broken_file_says_nothing(self, tmp_path, monkeypatch):
         from claude_swap.tui import fleetview
 
-        monkeypatch.setattr(fleetview, "_lifetime_cache", (0.0, None), raising=False)
+        fleetview._sweep_lifetime()
+        assert fleetview._lifetime_total == 7.0
+
+    def test_an_empty_machine_reports_nothing_not_zero(
+        self, tmp_path, monkeypatch
+    ):
+        """"Never recorded" and "zero" look identical and are not."""
+        (tmp_path / "projects").mkdir()
         monkeypatch.setattr(
-            "claude_swap.paths.get_global_config_path",
-            lambda: tmp_path / "absent.json",
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
         )
-        assert fleetview.lifetime_spend() is None
-        (tmp_path / "absent.json").write_text("{not json", encoding="utf-8")
-        monkeypatch.setattr(fleetview, "_lifetime_cache", (0.0, None), raising=False)
-        assert fleetview.lifetime_spend() is None
-
-    def test_an_empty_tally_is_nothing_not_zero(self, tmp_path, monkeypatch):
-        """Zero dollars and "never recorded" look the same and are not: a
-        fresh machine should show no line rather than a confident $0."""
-        assert self._spend(tmp_path, {"projects": {}}, monkeypatch) is None
-
-    def test_it_is_cached_between_reads(self, tmp_path, monkeypatch):
-        """~100 KB of JSON for a number that moves in cents."""
         from claude_swap.tui import fleetview
 
-        first = self._spend(tmp_path, {"projects": {"/a": {"lastModelUsage": {
-            "m": {"outputTokens": 5, "costUSD": 1.0}}}}}, monkeypatch)
-        self._write(tmp_path, {"projects": {"/a": {"lastModelUsage": {
-            "m": {"outputTokens": 999, "costUSD": 99.0}}}}})
-        assert fleetview.lifetime_spend() == first
+        fleetview._sweep_lifetime()
+        assert fleetview._lifetime_total is None
+
+    def test_a_corrupt_line_does_not_lose_the_file(self, tmp_path, monkeypatch):
+        import json
+
+        root = tmp_path / "projects" / "-a"
+        root.mkdir(parents=True)
+        (root / "s.jsonl").write_text(
+            "{not json\n"
+            + json.dumps({"type": "assistant",
+                          "message": {"usage": {"output_tokens": 4}}})
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        from claude_swap.tui import fleetview
+
+        fleetview._sweep_lifetime()
+        assert fleetview._lifetime_total == 4.0
+
+    def test_the_reader_never_blocks(self, tmp_path, monkeypatch):
+        """The sweep is seconds of I/O; the caller paints at 4.8 fps."""
+        from claude_swap.tui import fleetview
+
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(fleetview, "_lifetime_stamp", 0.0, raising=False)
+        monkeypatch.setattr(fleetview, "_lifetime_total", None, raising=False)
+        monkeypatch.setattr(fleetview, "_lifetime_by_project", {}, raising=False)
+        total, by_project = fleetview.lifetime_tokens()
+        assert total is None and by_project == {}
+
+    def test_a_path_encodes_to_its_transcript_directory(self):
+        from claude_swap.tui.fleetview import _encoded_project
+
+        assert _encoded_project("/home/me/x-y") == "-home-me-x-y"
 
     def test_counts_read_compactly(self):
         from claude_swap.tui.fleetview import _compact_count
 
-        assert _compact_count(3_800_000_000) == "3.8B"
+        assert _compact_count(66_100_000_000) == "66.1B"
         assert _compact_count(1500) == "1.5K"
-        assert _compact_count(42) == "42"
+        assert _compact_count(2_400_000) == "2.4M"
 
 
 @pytest.mark.asyncio

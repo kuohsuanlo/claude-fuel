@@ -19,6 +19,7 @@ would be a trap, since the engine keeps running from settings.json afterwards.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -115,69 +116,119 @@ _SPINNER = ("✻", "✽", "✳", "✢", "·", "✢", "✳", "✽")
 _INSTANCE_ACTIVE_WINDOW_S = 90.0
 
 
-#: Re-read at most this often. The file is ~100 KB of JSON and the number it
-#: yields moves in cents, so parsing it at display rate would be pure waste.
-_LIFETIME_TTL_S = 60.0
-_lifetime_cache: tuple[float, tuple[float, float] | None] = (0.0, None)
+#: A full transcript sweep is ~4 GB and a few seconds, and the answer moves
+#: only as work happens, so it runs on a thread this often and is cached to
+#: disk between launches.
+_LIFETIME_TTL_S = 15 * 60.0
+_lifetime_lock = threading.Lock()
+_lifetime_total: float | None = None
+_lifetime_by_project: dict[str, float] = {}
+_lifetime_stamp = 0.0
+_lifetime_thread: threading.Thread | None = None
+
+#: The token fields a request reports. Summed flat, not cost-weighted: this is
+#: "how much has gone through", where the weighting the burst guard uses would
+#: silently answer a different question.
+_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
 
 
-def lifetime_spend() -> tuple[float, float] | None:
-    """``(tokens, equivalent USD)`` over everything Claude Code has recorded.
+def _encoded_project(path: str) -> str:
+    """A project path as Claude Code names its transcript directory.
 
-    Claude Code keeps a running per-project, per-model tally in its own
-    ``~/.claude.json`` (``lastModelUsage``), including the dollar figure. It
-    is read rather than recomputed: the price table is Anthropic's and changes,
-    and a number derived from a stale copy of it would be confidently wrong.
-
-    THE DOLLARS ARE WHAT THE SAME WORK WOULD HAVE COST ON PAY-AS-YOU-GO, not
-    what anyone was billed — on a subscription the bill is flat. That makes it
-    a measure of value squeezed OUT of the plan, which is the only sense in
-    which this tool's whole subject matter has a price.
-
-    Cumulative and never reset, so it only goes up.
+    Always in this direction: a path encodes to exactly one name, while
+    decoding is ambiguous the moment a directory contains a dash.
     """
-    global _lifetime_cache
+    return path.replace("/", "-")
+
+
+def _sweep_lifetime() -> None:
+    """Total every transcript on the machine. Runs on a background thread."""
+    global _lifetime_total, _lifetime_by_project, _lifetime_stamp
     import json
-    import time as _time
 
-    from claude_swap.paths import get_global_config_path
+    from claude_swap.paths import get_claude_config_home
 
-    stamp, cached = _lifetime_cache
-    now = _time.time()
-    if cached is not None and now - stamp < _LIFETIME_TTL_S:
-        return cached
-    fields = (
-        "inputTokens",
-        "outputTokens",
-        "cacheReadInputTokens",
-        "cacheCreationInputTokens",
-    )
-    tokens = 0.0
-    cost = 0.0
+    by_project: dict[str, float] = {}
+    total = 0.0
     try:
-        raw = json.loads(get_global_config_path().read_text(encoding="utf-8"))
-        for config in (raw.get("projects") or {}).values():
-            for usage in (config.get("lastModelUsage") or {}).values():
-                if not isinstance(usage, dict):
-                    continue
-                cost += float(usage.get("costUSD") or 0.0)
-                for field in fields:
-                    tokens += float(usage.get(field) or 0.0)
-    except (OSError, ValueError, TypeError, AttributeError):
-        _lifetime_cache = (now, None)
-        return None
-    result = (tokens, cost) if tokens or cost else None
-    _lifetime_cache = (now, result)
-    return result
+        paths = list((get_claude_config_home() / "projects").glob("*/*.jsonl"))
+    except OSError:
+        paths = []
+    for path in paths:
+        subtotal = 0.0
+        try:
+            with path.open("rb") as handle:
+                for raw in handle:
+                    if b'"usage"' not in raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if record.get("type") != "assistant":
+                        continue
+                    usage = (record.get("message") or {}).get("usage") or {}
+                    if not isinstance(usage, dict):
+                        continue
+                    for field in _USAGE_FIELDS:
+                        value = usage.get(field)
+                        if isinstance(value, (int, float)):
+                            subtotal += float(value)
+        except OSError:
+            continue
+        if subtotal:
+            by_project[path.parent.name] = by_project.get(path.parent.name, 0.0) + subtotal
+            total += subtotal
+    with _lifetime_lock:
+        _lifetime_total = total or None
+        _lifetime_by_project = by_project
+        _lifetime_stamp = time.time()
+
+
+def lifetime_tokens() -> tuple[float | None, dict[str, float]]:
+    """``(total, per encoded project)`` over every transcript on this machine.
+
+    TOKENS, NOT DOLLARS. Claude Code's own tally is per-project ``lastModelUsage``
+    — and every field beside it starts with ``last``: it holds the MOST RECENT
+    SESSION for that project and empties when a new one starts. Summing it read
+    like a lifetime figure and was not; it under-reported this machine by
+    seventeen-fold and shrank whenever a session restarted.
+
+    The transcripts are the real record and go back to the first session, but
+    they carry no cost, and the price table that would turn tokens into money
+    is Anthropic's and changes. A dollar figure computed from a hardcoded copy
+    of it would be confidently wrong, which is worse than absent.
+
+    Never blocks: the sweep runs on a thread and this returns whatever is
+    known, refreshing in the background when stale.
+    """
+    global _lifetime_thread
+    with _lifetime_lock:
+        total, by_project, stamp = (
+            _lifetime_total,
+            dict(_lifetime_by_project),
+            _lifetime_stamp,
+        )
+    if time.time() - stamp >= _LIFETIME_TTL_S and (
+        _lifetime_thread is None or not _lifetime_thread.is_alive()
+    ):
+        _lifetime_thread = threading.Thread(target=_sweep_lifetime, daemon=True)
+        _lifetime_thread.start()
+    return total, by_project
 
 
 def _compact_count(value: float) -> str:
-    """``3.8B`` — a token count nobody wants to read digit by digit."""
-    for suffix in ("", "K", "M", "B"):
-        if abs(value) < 1000.0:
-            return f"{value:,.1f}{suffix}".replace(".0", "", 1) if suffix else f"{value:,.0f}"
+    """``66.1B`` — a token count nobody wants to read digit by digit."""
+    for suffix in ("K", "M", "B"):
         value /= 1000.0
-    return f"{value:,.1f}T"
+        if abs(value) < 1000.0:
+            return f"{value:,.1f}{suffix}"
+    return f"{value / 1000.0:,.1f}T"
 
 
 def _session_titles() -> dict[str, str]:
@@ -263,6 +314,7 @@ class FleetScreen(Screen):
         Binding("enter", "confirm", "Confirm"),
         Binding("r", "apply_recommended", "Use suggested"),
         Binding("h", "toggle_status", "Hide log"),
+        Binding("m", "toggle_usage", "Hide usage"),
         Binding("q", "app.quit", "Quit"),
     ]
 
@@ -295,7 +347,8 @@ class FleetScreen(Screen):
         self._gating_seen: frozenset[str] | None = None
         # (label, shown path, real path, count) — refreshed on the display
         # tick because process inspection is far too slow for frame rate.
-        self._instance_groups: list[tuple[str, str, str, int]] = []
+        self._instance_groups: list[tuple[str, str, str, str]] = []
+        self._show_usage = True
 
     def compose(self) -> ComposeResult:
         # The pet sits in its own column on the RIGHT. Below the gauges it
@@ -648,6 +701,11 @@ class FleetScreen(Screen):
         self._commit_threshold(
             min(spec.hi, max(spec.lo, self._settings.threshold + delta))
         )
+
+    def action_toggle_usage(self) -> None:
+        """Hide the token figures — for looking at, not for a screen share."""
+        self._show_usage = not self._show_usage
+        self._display_tick()
 
     def action_apply_recommended(self) -> None:
         """Adopt the threshold the measured burn rate implies — DOWNWARD ONLY.
@@ -1338,8 +1396,25 @@ class FleetScreen(Screen):
         # Every account's own right-hand edge, so a marker can point at the
         # account it names instead of at whichever one happens to be last.
         edges: dict[str, int] = {}
-        for segment, colour, weight in zip(row, colours, weights):
-            share = max(2, round(width * weight / total_weight))
+        # EXACT APPORTIONMENT. Rounding each share on its own left the sum
+        # adrift of `width`, so the three rows came out different lengths and
+        # stopped sharing a right edge — visible the moment a fifth account
+        # joined. Largest remainder hands out the leftover cells instead.
+        raw = [width * weight / total_weight for weight in weights]
+        shares = [max(2, int(value)) for value in raw]
+        spare = width - sum(shares)
+        if spare:
+            order = sorted(
+                range(len(raw)),
+                key=lambda i: (raw[i] - int(raw[i])),
+                reverse=spare > 0,
+            )
+            step = 1 if spare > 0 else -1
+            for index in range(abs(spare)):
+                position = order[index % len(order)]
+                if step > 0 or shares[position] > 2:
+                    shares[position] += step
+        for share, (segment, colour) in zip(shares, zip(row, colours)):
             keep = segment.headroom_pct / 100.0 * share
             cells = min(share, max(1, round(keep))) if segment.headroom_pct > 0 else 0
             if cells:
@@ -1355,11 +1430,16 @@ class FleetScreen(Screen):
                 edges[segment.number] = len(filled.plain) - 1
             rest = share - cells
             if rest > 0:
-                if spent.plain:
+                # The gap before a spent run is drawn INSIDE that run's own
+                # share, never added to it. Inserted separators made a row
+                # with four spent segments four cells longer than one with
+                # two, which is the other half of why the rows drifted.
+                gap = 1 if (filled.plain or spent.plain) else 0
+                gap = min(gap, rest)
+                if gap:
                     spent.append(" ")
-                spent.append(_EMPTY * rest, style=palette.track)
-        if spent.plain:
-            spent = Text(" ") + spent
+                if rest - gap:
+                    spent.append(_EMPTY * (rest - gap), style=palette.track)
         return filled, spent, edges
 
     def _render_burn(self, palette: Palette) -> None:
@@ -1683,7 +1763,7 @@ class FleetScreen(Screen):
 
     @staticmethod
     def _collect_running_instances() -> list[tuple[str, str, str, str]]:
-        """``(name, status, project, session id)`` per live session.
+        """``(name, status, shown path, real path)`` per live session.
 
         PER SESSION, not a count. They all spend the SAME active account, so a
         reader deciding whether to arm the engine wants to know WHICH of them
@@ -1714,7 +1794,7 @@ class FleetScreen(Screen):
                     titles.get(sid) or (sid[:8] if sid else "session"),
                     str(getattr(session, "status", "") or ""),
                     abbreviate_path(str(session.cwd)),
-                    sid,
+                    str(session.cwd),
                 )
             )
         # Working first, then by name: the row that explains a pinned model
@@ -1732,18 +1812,12 @@ class FleetScreen(Screen):
             f"Sessions ({len(rows)} on this account):",
             style=f"bold {palette.foreground}",
         )
-        spend = lifetime_spend()
-        if spend is not None:
-            tokens, cost = spend
-            # What the plan has been squeezed for, all-time. Dollars are the
-            # pay-as-you-go equivalent, not a bill — see `lifetime_spend`.
+        total, by_project = lifetime_tokens() if self._show_usage else (None, {})
+        if total is not None:
             text.append("    squeezed so far  ", style=palette.track)
-            text.append(f"{_compact_count(tokens)} tokens", style=palette.muted)
-            text.append("  ·  ", style=palette.track)
-            text.append(f"${cost:,.0f}", style=palette.sev_ok)
-            text.append(" of API value", style=palette.track)
+            text.append(f"{_compact_count(total)} tokens", style=palette.sev_ok)
         width = max(len(name) for name, _s, _p, _i in rows)
-        for name, status, project, _sid in rows:
+        for name, status, project, real in rows:
             working = status == "busy"
             text.append("\n  ")
             if working:
@@ -1764,6 +1838,14 @@ class FleetScreen(Screen):
                 style=palette.accent if working else palette.track,
             )
             text.append(f"  {project}", style=palette.track)
+            if by_project:
+                # This project's share of the sweep. Sessions in one project
+                # repeat the same figure — it is the PROJECT's total, and
+                # splitting it per session would need an attribution the
+                # transcripts do not record.
+                spent = by_project.get(_encoded_project(real))
+                if spent:
+                    text.append(f"  {_compact_count(spent)}", style=palette.muted)
         try:
             self.query_one("#fleet-instances", Static).update(text)
         except Exception:

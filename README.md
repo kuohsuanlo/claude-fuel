@@ -69,6 +69,7 @@ see [Commands](#commands).
 | `t` then `←` `→` | Adjust the threshold — **written to settings.json** |
 | `r` | Adopt the suggested threshold |
 | `h` | Hide the engine's log line |
+| `m` | Hide the token figures |
 | `q` | Quit |
 
 Arming and disarming never disturbs the display: the readings keep updating
@@ -396,13 +397,22 @@ Sessions (9 on this account):
   · endrod             shell    ~/Server/claude-sandbox/EndRod-paper-folia
 ```
 
-The header also carries what the plan has been squeezed for, all-time:
-`squeezed so far 3.8B tokens · $2,862 of API value`. Claude Code keeps that
-tally itself (`~/.claude.json`, `lastModelUsage`), so it is read rather than
-recomputed — the price table is Anthropic's and changes. **The dollars are
-what the same work would have cost on pay-as-you-go, not what anyone was
-billed**: on a subscription the bill is flat, which is exactly what makes the
-number worth looking at.
+The header carries how much has gone through this machine, all-time, and each
+row carries its project's share. `m` hides both.
+
+**Tokens, not dollars.** Claude Code keeps a per-project tally in
+`~/.claude.json` with a cost in it, and summing that looked like the obvious
+answer — but every field beside it starts with `last`: it holds the MOST
+RECENT SESSION for a project and empties when a new one starts. It read like a
+lifetime figure while under-reporting this machine seventeen-fold and shrinking
+whenever a session restarted. The transcripts are the real record and go back
+to the first session, but they carry no cost, and the price table that turns
+tokens into money is Anthropic's and changes — a dollar figure computed from a
+hardcoded copy of it would be confidently wrong, which is worse than absent.
+
+The sweep is a few seconds over several gigabytes, so it runs on a thread and
+refreshes every quarter hour; the reader never blocks and shows whatever is
+known.
 
 Every one of them spends the same active account, so arming the engine moves
 all of them at once — and one unrelated session on a model is enough to pin
@@ -529,7 +539,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2350 tests
+uv run pytest -q                       # 2352 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

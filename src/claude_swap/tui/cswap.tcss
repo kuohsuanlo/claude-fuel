@@ -252,7 +252,20 @@ AddTokenModal Input {
     margin-top: 1;
 }
 
-#fleet-instances {
+#fleet-bottom {
     height: auto;
     margin-top: 1;
+}
+
+#fleet-instances {
+    height: auto;
+    width: auto;
+}
+
+/* Beside the sessions, not under them: it answers where the spend went,
+   which is a different question from who is running. */
+#fleet-pricing {
+    height: auto;
+    width: auto;
+    padding-left: 4;
 }

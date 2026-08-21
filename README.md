@@ -400,15 +400,35 @@ Sessions (9 on this account):
 The header carries how much has gone through this machine, all-time, and each
 row carries its project's share. `m` hides both.
 
-**Tokens, not dollars.** Claude Code keeps a per-project tally in
-`~/.claude.json` with a cost in it, and summing that looked like the obvious
-answer — but every field beside it starts with `last`: it holds the MOST
-RECENT SESSION for a project and empties when a new one starts. It read like a
-lifetime figure while under-reporting this machine seventeen-fold and shrinking
-whenever a session restarted. The transcripts are the real record and go back
-to the first session, but they carry no cost, and the price table that turns
-tokens into money is Anthropic's and changes — a dollar figure computed from a
-hardcoded copy of it would be confidently wrong, which is worse than absent.
+Beside it, an **API pricing** block breaks the same spend down per model:
+
+```
+API pricing  rates 2026-06-24
+  claude-opus-5    out  112.1M  cache   37.3B  $   29,591
+  claude-fable-5   out   47.6M  cache   12.3B  $   21,408
+  claude-opus-4-8  out   54.9M  cache   13.9B  $   11,003
+  claude-sonnet-5  out  632.2K  cache  166.7M  $      115
+                                              $   62,117
+```
+
+**Tokens are measured; dollars are derived from a dated table.** Claude Code
+keeps a per-project tally in `~/.claude.json` with a cost in it, and summing
+that looked like the obvious answer — but every field beside it starts with
+`last`: it holds the MOST RECENT SESSION and empties when a new one starts. It
+read like a lifetime figure while under-reporting this machine seventeen-fold.
+The transcripts are the real record and reach back to the first session; they
+carry token counts and a model id, so the rates are applied here and **the
+date they were taken is on screen**, because a figure from a stale table is
+honest only while it says which table it used.
+
+**Cache reads set the total** — 63 of this machine's 66 billion tokens. They
+price at a tenth of the input rate and cache writes at a quarter more, so the
+headline per-model rate explains almost none of the figure; that is why the
+cache column sits next to the cost.
+
+**It is not a bill.** On a subscription the invoice is flat. This is what the
+same work would have cost pay-as-you-go — the only sense in which squeezing a
+plan has a number.
 
 The sweep is a few seconds over several gigabytes, so it runs on a thread and
 refreshes every quarter hour; the reader never blocks and shows whatever is
@@ -539,7 +559,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2352 tests
+uv run pytest -q                       # 2355 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

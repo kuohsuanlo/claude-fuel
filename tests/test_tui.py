@@ -2593,7 +2593,10 @@ class TestLifetimeTokens:
                 for output in requests:
                     handle.write(json.dumps({
                         "type": "assistant",
-                        "message": {"usage": {"output_tokens": output}},
+                        "message": {
+                            "model": "claude-opus-5",
+                            "usage": {"output_tokens": output},
+                        },
                     }) + "\n")
         return tmp_path
 
@@ -2613,7 +2616,10 @@ class TestLifetimeTokens:
             tmp_path, {"-a": [10, 20], "-b": [5]}, monkeypatch
         )
         assert total == 35.0
-        assert by_project == {"-a": 30.0, "-b": 5.0}
+        # [tokens, USD] — 30 output tokens of Opus at $25/M is $0.00075
+        assert by_project["-a"][0] == 30.0
+        assert by_project["-b"][0] == 5.0
+        assert by_project["-a"][1] == pytest.approx(30 * 25.0 / 1e6)
 
     def test_only_assistant_lines_with_usage_count(self, tmp_path, monkeypatch):
         import json
@@ -2621,12 +2627,13 @@ class TestLifetimeTokens:
         root = tmp_path / "projects" / "-a"
         root.mkdir(parents=True)
         (root / "s.jsonl").write_text(
-            json.dumps({"type": "user", "message": {"usage": {"output_tokens": 99}}})
+            json.dumps({"type": "user", "message": {
+                "model": "claude-opus-5", "usage": {"output_tokens": 99}}})
             + "\n"
             + json.dumps({"type": "assistant", "message": {}})
             + "\n"
-            + json.dumps({"type": "assistant",
-                          "message": {"usage": {"output_tokens": 7}}})
+            + json.dumps({"type": "assistant", "message": {
+                "model": "claude-opus-5", "usage": {"output_tokens": 7}}})
             + "\n",
             encoding="utf-8",
         )
@@ -2658,8 +2665,8 @@ class TestLifetimeTokens:
         root.mkdir(parents=True)
         (root / "s.jsonl").write_text(
             "{not json\n"
-            + json.dumps({"type": "assistant",
-                          "message": {"usage": {"output_tokens": 4}}})
+            + json.dumps({"type": "assistant", "message": {
+                "model": "claude-opus-5", "usage": {"output_tokens": 4}}})
             + "\n",
             encoding="utf-8",
         )
@@ -2683,6 +2690,44 @@ class TestLifetimeTokens:
         monkeypatch.setattr(fleetview, "_lifetime_by_project", {}, raising=False)
         total, by_project = fleetview.lifetime_tokens()
         assert total is None and by_project == {}
+
+    def test_a_request_without_a_model_is_not_counted(self, tmp_path, monkeypatch):
+        """It cannot be priced, and pricing it at zero would quietly deflate
+        the total instead of saying the record is incomplete."""
+        import json
+
+        root = tmp_path / "projects" / "-a"
+        root.mkdir(parents=True)
+        (root / "s.jsonl").write_text(
+            json.dumps({"type": "assistant",
+                        "message": {"usage": {"output_tokens": 50}}}) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        from claude_swap.tui import fleetview
+
+        fleetview._sweep_lifetime()
+        assert fleetview._lifetime_total is None
+
+    def test_cache_reads_are_a_tenth_and_writes_a_quarter_more(self):
+        """The multipliers are what actually set the total: cache reads are 63
+        of this machine's 66 billion tokens."""
+        from claude_swap.tui.fleetview import _price
+
+        # [input, output, cache_read, cache_write] at Opus rates
+        assert _price([1e6, 0, 0, 0], (5.0, 25.0)) == pytest.approx(5.0)
+        assert _price([0, 1e6, 0, 0], (5.0, 25.0)) == pytest.approx(25.0)
+        assert _price([0, 0, 1e6, 0], (5.0, 25.0)) == pytest.approx(0.5)
+        assert _price([0, 0, 0, 1e6], (5.0, 25.0)) == pytest.approx(6.25)
+
+    def test_an_unpriced_model_is_left_out_rather_than_guessed(self):
+        from claude_swap.tui.fleetview import _model_price
+
+        assert _model_price("claude-opus-5") == (5.0, 25.0)
+        assert _model_price("claude-haiku-4-5-20251001") == (1.0, 5.0)
+        assert _model_price("<synthetic>") is None
 
     def test_a_path_encodes_to_its_transcript_directory(self):
         from claude_swap.tui.fleetview import _encoded_project

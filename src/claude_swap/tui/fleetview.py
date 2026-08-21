@@ -115,6 +115,71 @@ _SPINNER = ("✻", "✽", "✳", "✢", "·", "✢", "✳", "✽")
 _INSTANCE_ACTIVE_WINDOW_S = 90.0
 
 
+#: Re-read at most this often. The file is ~100 KB of JSON and the number it
+#: yields moves in cents, so parsing it at display rate would be pure waste.
+_LIFETIME_TTL_S = 60.0
+_lifetime_cache: tuple[float, tuple[float, float] | None] = (0.0, None)
+
+
+def lifetime_spend() -> tuple[float, float] | None:
+    """``(tokens, equivalent USD)`` over everything Claude Code has recorded.
+
+    Claude Code keeps a running per-project, per-model tally in its own
+    ``~/.claude.json`` (``lastModelUsage``), including the dollar figure. It
+    is read rather than recomputed: the price table is Anthropic's and changes,
+    and a number derived from a stale copy of it would be confidently wrong.
+
+    THE DOLLARS ARE WHAT THE SAME WORK WOULD HAVE COST ON PAY-AS-YOU-GO, not
+    what anyone was billed — on a subscription the bill is flat. That makes it
+    a measure of value squeezed OUT of the plan, which is the only sense in
+    which this tool's whole subject matter has a price.
+
+    Cumulative and never reset, so it only goes up.
+    """
+    global _lifetime_cache
+    import json
+    import time as _time
+
+    from claude_swap.paths import get_global_config_path
+
+    stamp, cached = _lifetime_cache
+    now = _time.time()
+    if cached is not None and now - stamp < _LIFETIME_TTL_S:
+        return cached
+    fields = (
+        "inputTokens",
+        "outputTokens",
+        "cacheReadInputTokens",
+        "cacheCreationInputTokens",
+    )
+    tokens = 0.0
+    cost = 0.0
+    try:
+        raw = json.loads(get_global_config_path().read_text(encoding="utf-8"))
+        for config in (raw.get("projects") or {}).values():
+            for usage in (config.get("lastModelUsage") or {}).values():
+                if not isinstance(usage, dict):
+                    continue
+                cost += float(usage.get("costUSD") or 0.0)
+                for field in fields:
+                    tokens += float(usage.get(field) or 0.0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        _lifetime_cache = (now, None)
+        return None
+    result = (tokens, cost) if tokens or cost else None
+    _lifetime_cache = (now, result)
+    return result
+
+
+def _compact_count(value: float) -> str:
+    """``3.8B`` — a token count nobody wants to read digit by digit."""
+    for suffix in ("", "K", "M", "B"):
+        if abs(value) < 1000.0:
+            return f"{value:,.1f}{suffix}".replace(".0", "", 1) if suffix else f"{value:,.0f}"
+        value /= 1000.0
+    return f"{value:,.1f}T"
+
+
 def _session_titles() -> dict[str, str]:
     """``session id -> the name you gave it``, from Claude Code's transcripts.
 
@@ -1667,6 +1732,16 @@ class FleetScreen(Screen):
             f"Sessions ({len(rows)} on this account):",
             style=f"bold {palette.foreground}",
         )
+        spend = lifetime_spend()
+        if spend is not None:
+            tokens, cost = spend
+            # What the plan has been squeezed for, all-time. Dollars are the
+            # pay-as-you-go equivalent, not a bill — see `lifetime_spend`.
+            text.append("    squeezed so far  ", style=palette.track)
+            text.append(f"{_compact_count(tokens)} tokens", style=palette.muted)
+            text.append("  ·  ", style=palette.track)
+            text.append(f"${cost:,.0f}", style=palette.sev_ok)
+            text.append(" of API value", style=palette.track)
         width = max(len(name) for name, _s, _p, _i in rows)
         for name, status, project, _sid in rows:
             working = status == "busy"

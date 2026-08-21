@@ -396,6 +396,14 @@ Sessions (9 on this account):
   · endrod             shell    ~/Server/claude-sandbox/EndRod-paper-folia
 ```
 
+The header also carries what the plan has been squeezed for, all-time:
+`squeezed so far 3.8B tokens · $2,862 of API value`. Claude Code keeps that
+tally itself (`~/.claude.json`, `lastModelUsage`), so it is read rather than
+recomputed — the price table is Anthropic's and changes. **The dollars are
+what the same work would have cost on pay-as-you-go, not what anyone was
+billed**: on a subscription the bill is flat, which is exactly what makes the
+number worth looking at.
+
 Every one of them spends the same active account, so arming the engine moves
 all of them at once — and one unrelated session on a model is enough to pin
 that model's window and make every account exhausted on it read as unusable.
@@ -521,7 +529,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2345 tests
+uv run pytest -q                       # 2350 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

@@ -2571,6 +2571,77 @@ class TestRunningInstancesShowActivity:
         assert [r[0] for r in rows] == ["zzz", "aaa"], rows
 
 
+class TestLifetimeSpend:
+    """What the plan has been squeezed for, read from Claude Code's own tally."""
+
+    @staticmethod
+    def _write(tmp_path, payload):
+        import json
+
+        (tmp_path / ".claude.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _spend(self, tmp_path, payload, monkeypatch):
+        from claude_swap.tui import fleetview
+
+        self._write(tmp_path, payload)
+        monkeypatch.setattr(
+            fleetview, "_lifetime_cache", (0.0, None), raising=False
+        )
+        monkeypatch.setattr(
+            "claude_swap.paths.get_global_config_path",
+            lambda: tmp_path / ".claude.json",
+        )
+        return fleetview.lifetime_spend()
+
+    def test_it_totals_every_project_and_model(self, tmp_path, monkeypatch):
+        spend = self._spend(tmp_path, {"projects": {
+            "/a": {"lastModelUsage": {
+                "opus": {"inputTokens": 10, "outputTokens": 20,
+                         "cacheReadInputTokens": 30,
+                         "cacheCreationInputTokens": 40, "costUSD": 1.5},
+            }},
+            "/b": {"lastModelUsage": {
+                "haiku": {"inputTokens": 1, "outputTokens": 2, "costUSD": 0.25},
+            }},
+        }}, monkeypatch)
+        assert spend == (103.0, 1.75)
+
+    def test_a_missing_or_broken_file_says_nothing(self, tmp_path, monkeypatch):
+        from claude_swap.tui import fleetview
+
+        monkeypatch.setattr(fleetview, "_lifetime_cache", (0.0, None), raising=False)
+        monkeypatch.setattr(
+            "claude_swap.paths.get_global_config_path",
+            lambda: tmp_path / "absent.json",
+        )
+        assert fleetview.lifetime_spend() is None
+        (tmp_path / "absent.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(fleetview, "_lifetime_cache", (0.0, None), raising=False)
+        assert fleetview.lifetime_spend() is None
+
+    def test_an_empty_tally_is_nothing_not_zero(self, tmp_path, monkeypatch):
+        """Zero dollars and "never recorded" look the same and are not: a
+        fresh machine should show no line rather than a confident $0."""
+        assert self._spend(tmp_path, {"projects": {}}, monkeypatch) is None
+
+    def test_it_is_cached_between_reads(self, tmp_path, monkeypatch):
+        """~100 KB of JSON for a number that moves in cents."""
+        from claude_swap.tui import fleetview
+
+        first = self._spend(tmp_path, {"projects": {"/a": {"lastModelUsage": {
+            "m": {"outputTokens": 5, "costUSD": 1.0}}}}}, monkeypatch)
+        self._write(tmp_path, {"projects": {"/a": {"lastModelUsage": {
+            "m": {"outputTokens": 999, "costUSD": 99.0}}}}})
+        assert fleetview.lifetime_spend() == first
+
+    def test_counts_read_compactly(self):
+        from claude_swap.tui.fleetview import _compact_count
+
+        assert _compact_count(3_800_000_000) == "3.8B"
+        assert _compact_count(1500) == "1.5K"
+        assert _compact_count(42) == "42"
+
+
 @pytest.mark.asyncio
 class TestHeadlineNamesTheLimit:
     """"47 pts" summed percentages of different pools — a number with no unit.

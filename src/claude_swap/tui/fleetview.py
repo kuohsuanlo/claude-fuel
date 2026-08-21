@@ -294,6 +294,61 @@ def _compact_count(value: float) -> str:
     return f"{value / 1000.0:,.1f}T"
 
 
+def _session_models() -> dict[str, str]:
+    """``session id -> the model it last ran``.
+
+    Which sessions are on which model is the fact behind every per-model
+    window decision on this screen: one session on Fable pins that window for
+    the whole fleet, and every account exhausted on Fable then reads as
+    unusable. Without it the reader can see THAT a limit is in force but never
+    who put it there.
+
+    Read from the tail of each transcript — the most recent assistant line
+    wins, because a session can change model mid-run.
+    """
+    import json
+
+    from claude_swap.paths import get_claude_config_home
+
+    models: dict[str, str] = {}
+    try:
+        paths = list((get_claude_config_home() / "projects").glob("*/*.jsonl"))
+    except OSError:
+        return models
+    for path in paths:
+        try:
+            with path.open("rb") as handle:
+                handle.seek(max(0, path.stat().st_size - 400_000))
+                for raw in handle:
+                    if b'"model"' not in raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if record.get("type") != "assistant":
+                        continue
+                    model = (record.get("message") or {}).get("model")
+                    if isinstance(model, str) and not model.startswith("<"):
+                        models[path.stem] = model
+        except OSError:
+            continue
+    return models
+
+
+def _model_label(model: str) -> str:
+    """``claude-fable-5`` -> ``Fable 5``. The name a person uses."""
+    stem = model.split("[", 1)[0].removeprefix("claude-")
+    parts = [p for p in stem.split("-") if not p.isdigit() or len(p) < 5]
+    if not parts:
+        return model
+    family = parts[0].capitalize()
+    version = ".".join(parts[1:3]) if len(parts) > 2 else (
+        parts[1] if len(parts) > 1 else ""
+    )
+    return f"{family} {version}".strip()
+
+
 def _session_titles() -> dict[str, str]:
     """``session id -> the name you gave it``, from Claude Code's transcripts.
 
@@ -1831,8 +1886,8 @@ class FleetScreen(Screen):
         self._render_pricing(palette)
 
     @staticmethod
-    def _collect_running_instances() -> list[tuple[str, str, str, str]]:
-        """``(name, status, shown path, real path)`` per live session.
+    def _collect_running_instances() -> list[tuple[str, str, str, str, str]]:
+        """``(name, status, shown path, real path, model)`` per live session.
 
         PER SESSION, not a count. They all spend the SAME active account, so a
         reader deciding whether to arm the engine wants to know WHICH of them
@@ -1855,15 +1910,18 @@ class FleetScreen(Screen):
         except Exception:
             return []  # process inspection is best-effort; never break the view
         titles = _session_titles()
-        rows: list[tuple[str, str, str, str]] = []
+        models = _session_models()
+        rows: list[tuple[str, str, str, str, str]] = []
         for session in sessions:
             sid = getattr(session, "session_id", "") or ""
+            model = models.get(sid, "")
             rows.append(
                 (
                     titles.get(sid) or (sid[:8] if sid else "session"),
                     str(getattr(session, "status", "") or ""),
                     abbreviate_path(str(session.cwd)),
                     str(session.cwd),
+                    _model_label(model) if model else "",
                 )
             )
         # Working first, then by name: the row that explains a pinned model
@@ -1927,14 +1985,14 @@ class FleetScreen(Screen):
         )
         total, by_project = lifetime_tokens() if self._show_usage else (None, {})
         if total is not None:
-            text.append("    squeezed so far  ", style=palette.track)
+            text.append("    all time  ", style=palette.track)
             text.append(f"{_compact_count(total)} tokens", style=palette.muted)
             cost = _lifetime_snapshot.get("cost") or 0.0
             if cost:
                 text.append("  ·  ", style=palette.track)
                 text.append(f"${cost:,.0f}", style=palette.sev_ok)
-        width = max(len(name) for name, _s, _p, _i in rows)
-        for name, status, project, real in rows:
+        width = max(len(name) for name, *_rest in rows)
+        for name, status, project, real, model in rows:
             working = status == "busy"
             text.append("\n  ")
             if working:
@@ -1954,6 +2012,7 @@ class FleetScreen(Screen):
                 f"{status:<7}",
                 style=palette.accent if working else palette.track,
             )
+            text.append(f"  {model:<9}", style=palette.accent if model else palette.track)
             text.append(f"  {project}", style=palette.track)
             if by_project:
                 # This project's share of the sweep. Sessions in one project

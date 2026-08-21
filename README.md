@@ -390,11 +390,11 @@ session started with its own `--model`. Either is enough; the two are unioned.
 **The session list names them and says which are working.**
 
 ```
-Sessions (9 on this account):
-  ✻ cswap              busy     ~/Server/claude-sandbox
-  ✻ kenshi-zone-mc     busy     ~/Server/claude-sandbox
-  · grimac-reloaded    idle     ~/Server/claude-sandbox
-  · endrod             shell    ~/Server/claude-sandbox/EndRod-paper-folia
+Sessions (7 on this account):   all time  66.3B tokens · $62,223
+  ✻ cswap              busy   Opus 5     ~/Server/claude-sandbox
+  ✻ minecraft-palette  busy   Fable 5    ~/Server/claude-sandbox
+  · grimac-reloaded    idle   Opus 5     ~/Server/claude-sandbox
+  · endrod             shell  Opus 5     ~/Server/claude-sandbox/EndRod-paper-folia
 ```
 
 The header carries how much has gone through this machine, all-time, and each
@@ -439,8 +439,11 @@ all of them at once — and one unrelated session on a model is enough to pin
 that model's window and make every account exhausted on it read as unusable.
 The name is the title you gave the session, read from its transcript; a
 session id is not a name. `status` is Claude Code's own, not inferred from
-token traffic. Busy sessions sort first and carry the idle-star spinner, so
-the row that explains a pinned window is at the top.
+token traffic. **The model column is the one that answers the recurring
+question**: one session on Fable pins that window for the whole fleet, and
+every account exhausted on Fable then reads as unusable — before this column
+existed you could see that a limit was in force but never who put it there.
+Busy sessions sort first and carry the idle-star spinner.
 
 **A limit that becomes relevant is not waited on.** The engine's cadence is
 tied to the usage endpoint's budget — about one fetch a minute — but noticing
@@ -559,7 +562,7 @@ login, so arming auto-switch moves all of them at once.
 git clone git@github.com:kuohsuanlo/claude-fuel.git
 cd claude-fuel
 uv sync
-uv run pytest -q                       # 2355 tests
+uv run pytest -q                       # 2356 tests
 uv tool install --force --reinstall .  # install your working tree
 ```
 

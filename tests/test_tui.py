@@ -2503,8 +2503,8 @@ class TestRunningInstancesShowActivity:
             return rendered.plain if hasattr(rendered, "plain") else str(rendered)
 
     ROWS = [
-        ("kenshi-zone-mc", "busy", "~/Server/proj", "21aecf40"),
-        ("grimac-reloaded", "idle", "~/Server/other", "58802e6c"),
+        ("kenshi-zone-mc", "busy", "~/Server/proj", "/home/me/Server/proj", "Fable 5"),
+        ("grimac-reloaded", "idle", "~/Server/other", "/home/me/Server/other", "Opus 5"),
     ]
 
     async def test_it_names_each_session_and_its_status(
@@ -2514,6 +2514,10 @@ class TestRunningInstancesShowActivity:
         assert "kenshi-zone-mc" in text and "grimac-reloaded" in text, text
         assert "busy" in text and "idle" in text, text
         assert "Sessions (2 on this account)" in text, text
+        # WHICH MODEL each session is on. One session on Fable pins that
+        # window for the whole fleet, and every account exhausted on Fable
+        # then reads as unusable — asked repeatedly before this column existed.
+        assert "Fable 5" in text and "Opus 5" in text, text
 
     async def test_a_busy_session_gets_the_spinner(
         self, tmp_path, fake_fleet_engine
@@ -2528,15 +2532,25 @@ class TestRunningInstancesShowActivity:
         self, tmp_path, fake_fleet_engine
     ):
         """A spinner that never stops says "busy" about an idle machine."""
-        text = await self._rendered(
-            tmp_path, [("a", "idle", "~/x", "1"), ("b", "shell", "~/y", "2")]
-        )
+        text = await self._rendered(tmp_path, [
+            ("a", "idle", "~/x", "/x", "Opus 5"),
+            ("b", "shell", "~/y", "/y", ""),
+        ])
         assert not any(g in text for g in "✻✽✳"), text
 
     async def test_it_survives_having_no_sessions(
         self, tmp_path, fake_fleet_engine
     ):
         assert await self._rendered(tmp_path, []) == ""
+
+    def test_model_names_read_as_people_write_them(self):
+        from claude_swap.tui.fleetview import _model_label
+
+        assert _model_label("claude-fable-5") == "Fable 5"
+        assert _model_label("claude-opus-4-8") == "Opus 4.8"
+        assert _model_label("claude-haiku-4-5-20251001") == "Haiku 4.5"
+        # The context-window suffix is not part of the model's name.
+        assert _model_label("claude-opus-5[1m]") == "Opus 5"
 
     def test_a_session_without_a_title_falls_back_to_its_id(self):
         """Never blank: an unnamed session still has to be countable."""
@@ -2551,6 +2565,7 @@ class TestRunningInstancesShowActivity:
 
         with patch("claude_swap.process_detection.get_running_instances",
                    return_value=([Session()], [])), \
+             patch("claude_swap.tui.fleetview._session_models", return_value={}), \
              patch("claude_swap.tui.fleetview._session_titles", return_value={}):
             rows = FleetScreen._collect_running_instances()
         assert rows and rows[0][0] == "e69074c1"
@@ -2565,6 +2580,7 @@ class TestRunningInstancesShowActivity:
 
         with patch("claude_swap.process_detection.get_running_instances",
                    return_value=([session("a", "idle"), session("b", "busy")], [])), \
+             patch("claude_swap.tui.fleetview._session_models", return_value={}), \
              patch("claude_swap.tui.fleetview._session_titles",
                    return_value={"a": "aaa", "b": "zzz"}):
             rows = FleetScreen._collect_running_instances()

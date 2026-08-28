@@ -294,8 +294,17 @@ def _compact_count(value: float) -> str:
     return f"{value / 1000.0:,.1f}T"
 
 
-def _session_models() -> dict[str, str]:
-    """``session id -> the model it last ran``.
+#: How recently a session must have spent something for its model to be worth
+#: reporting. A session can sit "busy" for many minutes between requests, so
+#: this is generous — but it is bounded, because the alternative is a column
+#: that means "the last model this session EVER used". Measured live: a
+#: session was labelled Fable 5 from a request four and a half days old, and
+#: read as evidence that Fable was in use.
+_SESSION_MODEL_FRESH_S = 1800.0
+
+
+def _session_models() -> dict[str, tuple[str, bool]]:
+    """``session id -> (model, is it recent enough to be gating)``.
 
     Which sessions are on which model is the fact behind every per-model
     window decision on this screen: one session on Fable pins that window for
@@ -303,20 +312,38 @@ def _session_models() -> dict[str, str]:
     unusable. Without it the reader can see THAT a limit is in force but never
     who put it there.
 
-    Read from the tail of each transcript — the most recent assistant line
-    wins, because a session can change model mid-run.
+    Read from the tail of each transcript, newest assistant line wins — a
+    session can change model mid-run. A line older than
+    ``_SESSION_MODEL_FRESH_S`` reports nothing rather than the last model the
+    session happened to use: the column answers what is running now, and a
+    days-old answer to that question is not a weaker answer, it is a wrong one.
+
+    THE FLAG IS WHAT KEEPS THE SCREEN CONSISTENT. The gauge says a per-model
+    window is "not running" on a five-minute view of actual traffic, while a
+    session can sit between requests for far longer than that — so the column
+    and the gauge would contradict each other on the same data. The flag lets
+    the column render the difference instead: a model within the gating window
+    is shown in the accent, one outside it in the muted colour, and "not
+    running" beside a dimmed `Fable 5` reads as "used it, not lately".
     """
     import json
 
     from claude_swap.paths import get_claude_config_home
 
-    models: dict[str, str] = {}
+    from claude_swap.burn import GATING_IDLE_WINDOW_S
+
+    models: dict[str, tuple[str, bool]] = {}
+    now = time.time()
+    cutoff = now - _SESSION_MODEL_FRESH_S
+    gating_cutoff = now - GATING_IDLE_WINDOW_S
     try:
         paths = list((get_claude_config_home() / "projects").glob("*/*.jsonl"))
     except OSError:
         return models
     for path in paths:
         try:
+            if path.stat().st_mtime < cutoff:
+                continue  # nothing written lately; no request can be fresh
             with path.open("rb") as handle:
                 handle.seek(max(0, path.stat().st_size - 400_000))
                 for raw in handle:
@@ -329,11 +356,28 @@ def _session_models() -> dict[str, str]:
                     if record.get("type") != "assistant":
                         continue
                     model = (record.get("message") or {}).get("model")
-                    if isinstance(model, str) and not model.startswith("<"):
-                        models[path.stem] = model
+                    if not isinstance(model, str) or model.startswith("<"):
+                        continue
+                    stamp = _parse_stamp(record.get("timestamp"))
+                    if stamp is None or stamp >= cutoff:
+                        models[path.stem] = (
+                            model, stamp is None or stamp >= gating_cutoff
+                        )
+                    else:
+                        models.pop(path.stem, None)
         except OSError:
             continue
     return models
+
+
+def _parse_stamp(value: object) -> float | None:
+    """An ISO timestamp as epoch seconds, or None if it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def _model_label(model: str) -> str:
@@ -1914,14 +1958,14 @@ class FleetScreen(Screen):
         rows: list[tuple[str, str, str, str, str]] = []
         for session in sessions:
             sid = getattr(session, "session_id", "") or ""
-            model = models.get(sid, "")
+            model, live = models.get(sid, ("", False))
             rows.append(
                 (
                     titles.get(sid) or (sid[:8] if sid else "session"),
                     str(getattr(session, "status", "") or ""),
                     abbreviate_path(str(session.cwd)),
                     str(session.cwd),
-                    _model_label(model) if model else "",
+                    f"{_model_label(model)}\x00{'1' if live else ''}" if model else "",
                 )
             )
         # Working first, then by name: the row that explains a pinned model
@@ -1992,7 +2036,8 @@ class FleetScreen(Screen):
                 text.append("  ·  ", style=palette.track)
                 text.append(f"${cost:,.0f}", style=palette.sev_ok)
         width = max(len(name) for name, *_rest in rows)
-        for name, status, project, real, model in rows:
+        for name, status, project, real, model_field in rows:
+            model, _, live = model_field.partition("\x00")
             working = status == "busy"
             text.append("\n  ")
             if working:
@@ -2012,7 +2057,13 @@ class FleetScreen(Screen):
                 f"{status:<7}",
                 style=palette.accent if working else palette.track,
             )
-            text.append(f"  {model:<9}", style=palette.accent if model else palette.track)
+            # Accent only while the model is inside the gating window, so this
+            # column and the gauge's "running / not running" never disagree on
+            # the same data — a dimmed name reads as "used it, not lately".
+            text.append(
+                f"  {model:<9}",
+                style=palette.accent if live else palette.track,
+            )
             text.append(f"  {project}", style=palette.track)
             if by_project:
                 # This project's share of the sweep. Sessions in one project

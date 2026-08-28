@@ -2543,6 +2543,62 @@ class TestRunningInstancesShowActivity:
     ):
         assert await self._rendered(tmp_path, []) == ""
 
+    @staticmethod
+    def _transcript(tmp_path, sid, model, age_s):
+        import json
+        from datetime import datetime, timedelta, timezone
+
+        folder = tmp_path / "projects" / "-p"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(seconds=age_s)
+        ).isoformat().replace("+00:00", "Z")
+        (folder / f"{sid}.jsonl").write_text(
+            json.dumps({
+                "type": "assistant", "timestamp": stamp,
+                "message": {"model": model, "usage": {"output_tokens": 1}},
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_a_days_old_model_is_not_what_the_session_is_running(
+        self, tmp_path, monkeypatch
+    ):
+        """Reported live: a session was labelled Fable 5 from a request four
+        and a half days old, and read as evidence that Fable was in use —
+        directly contradicting the gauge, which said "not running"."""
+        from claude_swap.tui.fleetview import _session_models
+
+        self._transcript(tmp_path, "old", "claude-fable-5", 4.6 * 86400)
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        assert _session_models() == {}
+
+    def test_a_recent_model_is_flagged_as_gating(self, tmp_path, monkeypatch):
+        from claude_swap.tui.fleetview import _session_models
+
+        self._transcript(tmp_path, "now", "claude-fable-5", 30)
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        assert _session_models() == {"now": ("claude-fable-5", True)}
+
+    def test_between_the_two_windows_it_shows_but_does_not_claim_to_gate(
+        self, tmp_path, monkeypatch
+    ):
+        """The gauge decides "running" on a five-minute view of traffic while
+        a session can sit between requests far longer, so the two would
+        contradict each other on the same data. The flag renders the
+        difference instead of hiding it."""
+        from claude_swap.tui.fleetview import _session_models
+
+        self._transcript(tmp_path, "mid", "claude-opus-5", 900)
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        assert _session_models() == {"mid": ("claude-opus-5", False)}
+
     def test_model_names_read_as_people_write_them(self):
         from claude_swap.tui.fleetview import _model_label
 

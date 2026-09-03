@@ -590,6 +590,9 @@ class TestPerModelWindows:
 
     def test_display_name_joins_to_the_model_id(self):
         assert burn.model_matches("Fable", "claude-fable-5")
+        # A point release shares the family window: the API still reports
+        # one "Fable" window per account for 5 and 5.1 alike.
+        assert burn.model_matches("Fable", "claude-fable-5-1")
         assert burn.model_matches("Opus", "claude-opus-5")
         assert not burn.model_matches("Fable", "claude-opus-5")
         assert not burn.model_matches("Fable", None)

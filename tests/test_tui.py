@@ -2603,6 +2603,7 @@ class TestRunningInstancesShowActivity:
         from claude_swap.tui.fleetview import _model_label
 
         assert _model_label("claude-fable-5") == "Fable 5"
+        assert _model_label("claude-fable-5-1") == "Fable 5.1"
         assert _model_label("claude-opus-4-8") == "Opus 4.8"
         assert _model_label("claude-haiku-4-5-20251001") == "Haiku 4.5"
         # The context-window suffix is not part of the model's name.
@@ -2789,17 +2790,34 @@ class TestLifetimeTokens:
         from claude_swap.tui.fleetview import _price
 
         # [input, output, cache_read, cache_write] at Opus rates
-        assert _price([1e6, 0, 0, 0], (5.0, 25.0)) == pytest.approx(5.0)
-        assert _price([0, 1e6, 0, 0], (5.0, 25.0)) == pytest.approx(25.0)
+        assert _price([1e6, 0, 0, 0], (5.0, 25.0, 0.5)) == pytest.approx(5.0)
+        assert _price([0, 1e6, 0, 0], (5.0, 25.0, 0.5)) == pytest.approx(25.0)
+        assert _price([0, 0, 1e6, 0], (5.0, 25.0, 0.5)) == pytest.approx(0.5)
+        assert _price([0, 0, 0, 1e6], (5.0, 25.0, 0.5)) == pytest.approx(6.25)
+        # Cache read is its own column: Fable 5.1 reads at a fortieth of
+        # input, not the tenth a shared multiplier would charge.
+        assert _price([0, 0, 1e6, 0], (10.0, 50.0, 0.25)) == pytest.approx(0.25)
+        # A rate tuple without the column still prices, at the old tenth.
         assert _price([0, 0, 1e6, 0], (5.0, 25.0)) == pytest.approx(0.5)
-        assert _price([0, 0, 0, 1e6], (5.0, 25.0)) == pytest.approx(6.25)
 
     def test_an_unpriced_model_is_left_out_rather_than_guessed(self):
         from claude_swap.tui.fleetview import _model_price
 
-        assert _model_price("claude-opus-5") == (5.0, 25.0)
-        assert _model_price("claude-haiku-4-5-20251001") == (1.0, 5.0)
+        assert _model_price("claude-opus-5") == (5.0, 25.0, 0.5)
+        assert _model_price("claude-haiku-4-5-20251001") == (1.0, 5.0, 0.1)
         assert _model_price("<synthetic>") is None
+
+    def test_a_point_release_prices_at_its_own_row_not_its_parents(self):
+        """``claude-fable-5-1`` starts with ``claude-fable-5``. First-match
+        in table order would hand it the parent's rates however the table
+        was written — and the two differ where it matters most: cache read
+        is $0.25 on 5.1 against $1 on 5, over 63 of 66 billion tokens."""
+        from claude_swap.tui.fleetview import _PRICES, _model_price
+
+        assert _model_price("claude-fable-5-1") == _PRICES["claude-fable-5-1"]
+        assert _model_price("claude-fable-5-1") != _model_price("claude-fable-5")
+        assert _model_price("claude-fable-5-1")[2] == pytest.approx(0.25)
+        assert _model_price("claude-fable-5")[2] == pytest.approx(1.0)
 
     def test_a_path_encodes_to_its_transcript_directory(self):
         from claude_swap.tui.fleetview import _encoded_project

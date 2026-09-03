@@ -151,39 +151,54 @@ def _encoded_project(path: str) -> str:
     return path.replace("/", "-")
 
 
-#: USD per million tokens, input then output. Stamped with the date it was
-#: taken because prices change and a figure derived from a stale table is only
-#: honest while it says which table it used.
-PRICE_DATE = "2026-06-24"
+#: USD per million tokens: input, output, cache read. Stamped with the date it
+#: was taken because prices change and a figure derived from a stale table is
+#: only honest while it says which table it used. Source: the platform pricing
+#: page, re-read on that date.
+#:
+#: CACHE READ IS A COLUMN, NOT A MULTIPLIER. It was a tenth of input on every
+#: model until Fable 5.1 and Mythos 5.1 priced it at a fortieth — and cache
+#: reads are 63 of this machine's 66 billion tokens, so a shared 0.1× would
+#: overstate a 5.1 row four-fold. The official table lists it per model; so
+#: does this one.
+PRICE_DATE = "2026-09-03"
 _PRICES = {
-    "claude-fable-5": (10.0, 50.0),
-    "claude-mythos-5": (10.0, 50.0),
-    "claude-opus-5": (5.0, 25.0),
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-opus-4-7": (5.0, 25.0),
-    "claude-opus-4-6": (5.0, 25.0),
-    "claude-sonnet-5": (3.0, 15.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-mythos-5": (10.0, 50.0, 1.0),
+    "claude-opus-5": (5.0, 25.0, 0.5),
+    "claude-opus-4-8": (5.0, 25.0, 0.5),
+    "claude-opus-4-7": (5.0, 25.0, 0.5),
+    "claude-opus-4-6": (5.0, 25.0, 0.5),
+    "claude-opus-4-5": (5.0, 25.0, 0.5),
+    "claude-sonnet-5": (2.0, 10.0, 0.2),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.3),
+    "claude-sonnet-4-5": (3.0, 15.0, 0.3),
+    "claude-haiku-4-5": (1.0, 5.0, 0.1),
 }
-#: Cache writes cost a premium over input, cache reads a small fraction of it.
-#: On this machine cache READS are 63 of 66 billion tokens, so this multiplier
-#: — not the headline input rate — is what actually sets the total.
+#: Cache writes cost a premium over input on every model. Cache reads are per
+#: model (see the table); this multiplier is only the fallback for a rate
+#: tuple that predates the column.
 _CACHE_WRITE_MULT = 1.25
 _CACHE_READ_MULT = 0.10
 
 
-def _model_price(model: str) -> tuple[float, float] | None:
+def _model_price(model: str) -> tuple[float, ...] | None:
     """Rates for a transcript's model id, or None if it is not a priced model.
 
-    Prefix match: a transcript records ``claude-haiku-4-5-20251001`` where the
-    table is keyed by family. ``<synthetic>`` entries match nothing and are
-    left out of the total rather than priced at zero.
+    LONGEST prefix match: a transcript records ``claude-haiku-4-5-20251001``
+    where the table is keyed by family, so a prefix is the join — but
+    ``claude-fable-5-1`` also starts with ``claude-fable-5``, and first-match
+    in table order would price a point release at its parent's row no matter
+    what the table said. ``<synthetic>`` entries match nothing and are left
+    out of the total rather than priced at zero.
     """
-    for name, rates in _PRICES.items():
-        if model.startswith(name):
-            return rates
-    return None
+    best = None
+    for name in _PRICES:
+        if model.startswith(name) and (best is None or len(name) > len(best)):
+            best = name
+    return _PRICES[best] if best else None
 
 
 def _sweep_lifetime() -> None:
@@ -244,15 +259,20 @@ def _sweep_lifetime() -> None:
         _lifetime_stamp = time.time()
 
 
-def _price(counts: list[float], rates: tuple[float, float]) -> float:
-    """USD for one request's four token counts, in `_USAGE_FIELDS` order."""
+def _price(counts: list[float], rates: tuple[float, ...]) -> float:
+    """USD for one request's four token counts, in `_USAGE_FIELDS` order.
+
+    ``rates`` is ``(input, output, cache read)`` per million; a two-tuple
+    falls back to the historical tenth-of-input read rate.
+    """
     inp, out, cache_read, cache_write = counts
-    rate_in, rate_out = rates
+    rate_in, rate_out = rates[0], rates[1]
+    rate_read = rates[2] if len(rates) > 2 else rate_in * _CACHE_READ_MULT
     return (
         inp * rate_in
         + out * rate_out
         + cache_write * rate_in * _CACHE_WRITE_MULT
-        + cache_read * rate_in * _CACHE_READ_MULT
+        + cache_read * rate_read
     ) / 1_000_000.0
 
 
@@ -2061,7 +2081,7 @@ class FleetScreen(Screen):
             # column and the gauge's "running / not running" never disagree on
             # the same data — a dimmed name reads as "used it, not lately".
             text.append(
-                f"  {model:<9}",
+                f"  {model:<10}",
                 style=palette.accent if live else palette.track,
             )
             text.append(f"  {project}", style=palette.track)

@@ -176,7 +176,8 @@ screen because prices change, and a figure from a stale table is honest only
 while it says which table it used.
 
 **Cache reads set the total.** They are 63 of this machine's 66 billion tokens,
-and price at a tenth of the input rate (writes at a quarter more). The headline
+and price at a tenth of the input rate on most models — a fortieth on Fable
+5.1 (writes at a quarter more on all of them). The headline
 per-model rate explains almost none of the figure, which is why the cache column
 sits next to the cost.
 

@@ -128,6 +128,62 @@ class TestSensorIngest:
         sensor.poll()
         assert sensor.tokens_per_s() == 0.0
 
+    def test_first_sighting_reads_back_spend_inside_the_window(
+        self, projects: Path
+    ):
+        """THE OTHER HALF, and the one that was missing. Skipping to the end
+        left the sensor blind for its whole retention window: it reported zero
+        tokens per second however busy the machine was. The engine builds a
+        fresh sensor every time auto is toggled, and read that zero as an idle
+        machine — which keeps every declared model gating, so an account
+        holding Fable at 100% was judged at-limit and escaped off on the very
+        first tick."""
+        path = _session(projects)
+        clock = FakeClock()
+        _append(path, _assistant_line(message_id="m1", ts=clock.now - 60, output=100))
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        assert sensor.tokens_per_s(300.0) > 0
+
+    def test_the_backfill_still_refuses_undated_history(self, projects: Path):
+        """An undated record is dated to NOW, which is right for a line just
+        appended and wrong for one read out of history — exactly the stacking
+        that motivated skipping to the end."""
+        path = _session(projects)
+        clock = FakeClock()
+        line = json.loads(
+            _assistant_line(message_id="m1", ts=clock.now - 60, output=50_000)
+        )
+        del line["timestamp"]
+        _append(path, json.dumps(line))
+        sensor = TranscriptBurnSensor(projects, clock=clock)
+        sensor.poll()
+        assert sensor.tokens_per_s(300.0) == 0.0
+
+    def test_the_backfill_starts_on_a_line_boundary(self, projects: Path):
+        """Seeking a fixed distance back lands mid-line, and half a record
+        parses as nothing — silently losing the first request it reads."""
+        import claude_swap.burn as burn_mod
+
+        path = _session(projects)
+        clock = FakeClock()
+        _append(
+            path,
+            _assistant_line(message_id="old", ts=clock.now - 60, output=100),
+            _assistant_line(message_id="new", ts=clock.now - 30, output=100),
+        )
+        original = burn_mod._COLD_START_TAIL_BYTES
+        try:
+            # Small enough that the read starts inside the first record.
+            burn_mod._COLD_START_TAIL_BYTES = path.stat().st_size // 2
+            sensor = TranscriptBurnSensor(projects, clock=clock)
+            sensor.poll()
+        finally:
+            burn_mod._COLD_START_TAIL_BYTES = original
+        # The whole second record survives; the sliced first one is not
+        # half-counted, and nothing raises.
+        assert sensor.tokens_per_s(300.0) > 0
+
     def test_counts_growth_after_first_sighting(self, projects: Path):
         path = _session(projects)
         _append(path, _assistant_line(message_id="m0", ts=999_000.0, output=1))

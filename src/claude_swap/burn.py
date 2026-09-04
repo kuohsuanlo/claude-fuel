@@ -81,6 +81,13 @@ INSTANT_WINDOW_S = 60.0
 # 5-minute window, and skipping them keeps the per-second poll O(active
 # sessions) instead of O(every session ever recorded).
 _IDLE_FILE_S = 3600.0
+#: How far back to read a transcript the FIRST time it is seen. Skipping
+#: straight to the end left the sensor blind for its whole retention window —
+#: it reported a rate of zero however busy the machine was — and a fresh
+#: engine is built every time auto is toggled. Sized to cover the retention
+#: window on a busy machine; records older than it are dropped by timestamp
+#: anyway, so reading too much costs a little IO and nothing else.
+_COLD_START_TAIL_BYTES = 8 * 1024 * 1024
 
 # Calibration keeps this many bracketed intervals. Enough to average out a
 # single mis-attributed interval (a switch mid-interval, a window rollover),
@@ -412,7 +419,27 @@ class TranscriptBurnSensor:
             # read it from the beginning. (Records too old for the window are
             # dropped in _consume_line, so even a long-idle file that resumes
             # and is scanned for the first time cannot backfill stale spend.)
-            start = size if not self._primed else 0
+            if self._primed:
+                start = 0  # a session that began while we were watching
+            else:
+                # HISTORY IS STILL EVIDENCE ABOUT THE PRESENT. Skipping to the
+                # end meant the first window after startup measured the sensor,
+                # not the machine: zero tokens per second however busy it was.
+                # `_consume_line` drops records older than the retention window
+                # by their OWN timestamp, so reading back cannot date a session
+                # to startup — the risk that motivated the skip is handled
+                # there, and undated records are refused outright below.
+                start = max(0, size - _COLD_START_TAIL_BYTES)
+                if start:
+                    # Landing mid-line would feed half a record to the parser,
+                    # which yields nothing — so advance to the next boundary.
+                    # But only when there IS a partial: a start that already
+                    # sits just after a newline is a whole line, and skipping
+                    # it anyway would drop a complete request.
+                    with path.open("rb") as handle:
+                        handle.seek(start - 1)
+                        if handle.read(1) != b"\n":
+                            start += len(handle.readline())
             self._cursors[key] = cursor = _FileCursor(offset=start, size=size)
             if start >= size:
                 return
@@ -436,10 +463,16 @@ class TranscriptBurnSensor:
         # The project directory is the readable half of a transcript path and
         # the same label the dashboard already lists instances under.
         source = path.parent.name
+        # Undated records are dated to NOW, which is right for a line just
+        # appended and wrong for one read out of history — the very thing that
+        # would stack a session onto startup. Refuse them while backfilling.
+        dated_only = not self._primed
         for raw in data[:consumed].splitlines():
-            self._consume_line(raw, now, source)
+            self._consume_line(raw, now, source, dated_only=dated_only)
 
-    def _consume_line(self, raw: bytes, now: float, source: str = "") -> None:
+    def _consume_line(
+        self, raw: bytes, now: float, source: str = "", *, dated_only: bool = False
+    ) -> None:
         if b'"usage"' not in raw:
             return  # cheap reject: user/tool-result lines carry no usage
         try:
@@ -463,6 +496,8 @@ class TranscriptBurnSensor:
         if weighted <= 0:
             return
         ts = _parse_ts(record.get("timestamp"))
+        if dated_only and (ts is None or ts > now):
+            return  # read out of history; "now" would be a fabricated stamp
         if ts is None or ts > now:
             # No timestamp, or one in the future (clock skew against the
             # writer): the ingest itself is the evidence that this spend just

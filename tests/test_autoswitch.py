@@ -3122,6 +3122,90 @@ def _usage7(pct5: float, pct7: float, reset7: str | None = None) -> dict:
     return {"five_hour": {"pct": pct5}, "seven_day": seven}
 
 
+class TestAProactiveMoveNeverLandsShort:
+    """The starved fallback is an ESCAPE clause. Reported live as a ping-pong:
+    00:00:46 5->1, 00:00:57 1->5, 00:06:03 5->1, 00:06:31 1->5 — the engine
+    kept switching onto an account whose 5h window sat at 98% against a 90%
+    threshold, dying there in seconds, and coming back.
+
+    Every real candidate had been (correctly) refused: two at their limit, two
+    calmer than the active account on the waste axis. That left `qualifying`
+    empty — and the fallback then landed on the ROOMIEST of the accounts that
+    had been set aside as too thin to absorb one tick. Its docstring reasons
+    about a fleet with nowhere else to go, which is an escape's situation; a
+    proactive trigger that finds nothing worth moving to has a strictly better
+    option the fallback never considered: stay.
+    """
+
+    @staticmethod
+    def _acct(pct5, pct7, fable, reset):
+        # The Fable window matters: it is the BINDING weekly window on every
+        # account here, so it is what the waste axis measures. Without it the
+        # 7d numbers let account 3 qualify and the fallback never fires — a
+        # first draft of this test passed for exactly that wrong reason.
+        return {
+            "five_hour": {"pct": pct5},
+            "seven_day": {"pct": pct7, "resets_at": reset},
+            "scoped": [{"name": "Fable", "pct": fable, "resets_at": reset}],
+        }
+
+    @classmethod
+    def _fleet(cls):
+        # The live fleet at 00:06, pct utilised. Active = 5 with 53 points.
+        return {
+            "1": cls._acct(98, 39, 73, "2026-09-08T06:59:00Z"),   # 5h nearly spent
+            "2": cls._acct(100, 41, 79, "2026-09-06T18:59:00Z"),  # at its limit
+            "3": cls._acct(52, 31, 60, "2026-09-09T14:00:00Z"),   # calmer than 5
+            "5": cls._acct(46, 24, 47, "2026-09-11T02:00:00Z"),   # active
+            "6": cls._acct(0, 32, 63, "2026-09-12T05:59:00Z"),    # calmer than 5
+        }
+
+    def _args(self, harness, trigger):
+        from claude_swap.settings import AutoSwitchSettings
+
+        import time as _t
+        now = _t.mktime((2026, 9, 6, 0, 6, 3, 0, 0, -1))
+        return dict(
+            trigger=trigger,
+            consume_first=False,
+            waste_first=True,
+            oauth_candidates=["1", "2", "3", "6"],
+            usage=self._fleet(),
+            headroom={"1": 2.0, "2": 0.0, "3": 40.0, "6": 37.0},
+            current="5",
+            active_headroom=53.0,
+            settings=AutoSwitchSettings(strategy="waste-first", threshold=90.0),
+            now=now,
+            no_return=None,
+        )
+
+    def test_waste_first_with_nothing_worth_moving_to_stays_put(
+        self, harness, monkeypatch
+    ):
+        # One tick of the live burn: 2 points of headroom cannot absorb it.
+        monkeypatch.setattr(harness.engine, "_landing_margin", lambda *_: 5.0)
+        ranked, _, _ = harness.engine._rank_candidates(
+            **self._args(harness, "waste-first")
+        )
+        assert "1" not in ranked, (
+            f"a proactive move landed on the account it had just set aside as "
+            f"too thin to survive one tick — ranked {ranked}"
+        )
+
+    def test_an_escape_still_takes_the_roomiest_short_account(
+        self, harness, monkeypatch
+    ):
+        """The clause exists for this case and must keep working: when the
+        active account is DEAD, a few seconds somewhere beats a hard limit."""
+        monkeypatch.setattr(harness.engine, "_landing_margin", lambda *_: 5.0)
+        args = self._args(harness, "at-limit")
+        args["active_headroom"] = 0.0
+        # Every other candidate is out — only the thin one is left to try.
+        args["oauth_candidates"] = ["1", "2"]
+        ranked, _, _ = harness.engine._rank_candidates(**args)
+        assert ranked == ["1"]
+
+
 class TestConsumeFirstStrategy:
     def _harness(self, temp_home: Path) -> EngineHarness:
         h = EngineHarness(temp_home, strategy="consume-first")

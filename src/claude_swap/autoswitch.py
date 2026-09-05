@@ -2517,10 +2517,28 @@ class AutoSwitchEngine:
         # Ascending by the strategy's key; list order (sequence order) breaks ties.
         qualifying = qualifying or fallback
         qualifying.sort(key=lambda t: t[0])
-        if not qualifying and starved:
+        if (
+            not qualifying
+            and starved
+            and (trigger not in PROACTIVE_TRIGGERS or all_above)
+        ):
             # Nothing can absorb a full tick. Land on the ROOMIEST rather than
             # whichever the weekly ranking liked: with every option short, how
             # long each one lasts is the only thing separating them.
+            #
+            # AN ESCAPE CLAUSE, SCOPED TO ESCAPES. It exists for a fleet with
+            # nowhere else to go — the active account is dead (at-limit,
+            # failover) or every account is over the line (`all_above`). A
+            # proactive trigger that finds nothing worth moving to is not in
+            # that situation: it has 53 points under it and a strictly better
+            # option this clause never weighed, which is to stay. Unscoped, it
+            # fired exactly there — measured live as a ping-pong, 5->1 at
+            # 00:00:46 and back at 00:00:57, again at 00:06:03 and 00:06:31:
+            # every real candidate was rightly refused (two at their limit, two
+            # calmer than the active on the waste axis), the list came up
+            # empty, and the fallback landed on the one account that had been
+            # set aside as too thin to survive a single tick. It died there in
+            # seconds and came back, and the next tick did it again.
             qualifying = [((0.0,), max(starved, key=lambda item: item[0])[1])]
         return [num for _, num in qualifying], any_known, active_reset_ts
 

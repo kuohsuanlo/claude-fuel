@@ -3014,12 +3014,37 @@ class TestTheTankReading:
             tmp_path,
         )
 
-    async def _bars(self, tmp_path, size=(140, 46)):
+    @staticmethod
+    def _roomy_fleet(tmp_path):
+        """Same shape, but with the WEEKLY window wide open — so the session
+        row is free to exceed 100% without the cap having anything to say."""
+        import json as _json
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        return FakeSwitcher(
+            [
+                make_account(
+                    1, entry=make_entry(0.0, 0.0, scoped=[("Fable", 77.0)])
+                ),
+                make_account(
+                    2, entry=make_entry(0.0, 0.0, scoped=[("Fable", 78.0)])
+                ),
+                make_account(
+                    3, active=True,
+                    entry=make_entry(92.0, 0.0, scoped=[("Fable", 100.0)]),
+                ),
+            ],
+            tmp_path,
+        )
+
+    async def _bars(self, tmp_path, size=(140, 46), fleet=None):
         from textual.widgets import Static
 
         from claude_swap.tui.app import CswapApp
 
-        app = CswapApp(self._fleet(tmp_path), start="fleet")
+        app = CswapApp(fleet or self._fleet(tmp_path), start="fleet")
         async with app.run_test(size=size) as pilot:
             await settle(pilot)
             rendered = app.screen.query_one("#fleet-bars", Static).render()
@@ -3032,10 +3057,14 @@ class TestTheTankReading:
     ):
         """Two idle accounts and one at 92% hold 208% of a 5-hour window
         between them. Clamping that to 100 would say the same thing about a
-        fleet of one and a fleet of six."""
+        fleet of one and a fleet of six.
+
+        On a fleet whose WEEKLY windows are open, so the reachability cap has
+        nothing to take away — the point being pinned here is the unit, not
+        the cap."""
         import re
 
-        lines = await self._bars(tmp_path)
+        lines = await self._bars(tmp_path, fleet=self._roomy_fleet(tmp_path))
         session = next(line for line in lines if line.lstrip().startswith("5h:"))
         assert re.match(r"\s+5h:\s+208%\s+[━╸╌]", session), session
 
@@ -3050,8 +3079,51 @@ class TestTheTankReading:
             match = re.match(r"\s+(\S+):\s+(\d+)%\s+[━╸╌─]", line)
             if match:
                 found[match.group(1)] = int(match.group(2))
-        # 7d: (100-64) + (100-93) + (100-96);  Fable: 23 + 22 + 0
-        assert found == {"5h": 208, "7d": 47, "Fable": 45}, found
+        # 7d: (100-64) + (100-93) + (100-96) = 36 + 7 + 4 = 47, and every
+        # other row is CAPPED BY IT — the weekly window counts every request,
+        # so nothing above its headroom can be spent whatever another window
+        # holds. 5h: min(100,36) + min(100,7) + min(8,4) = 47. Fable:
+        # min(23,36) + min(22,7) + min(0,4) = 30.
+        assert found == {"5h": 47, "7d": 47, "Fable": 30}, found
+
+    async def test_a_row_never_counts_quota_the_weekly_window_blocks(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """REPORTED LIVE. Two accounts sat at 7d 100% with their 5-hour
+        windows reading 100% and 95% free; the session row added those in and
+        announced 489% against 51% that could actually be spent. A per-model
+        window is worse than unreachable — it shares the weekly reset, so the
+        excess is never spent, only lost."""
+        import json as _json
+        import re
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        fleet = FakeSwitcher(
+            [
+                # Weekly spent: a full 5-hour window it can never reach.
+                make_account(
+                    1, entry=make_entry(0.0, 100.0, scoped=[("Fable", 85.0)])
+                ),
+                # 1 point of weekly left against 30 of Fable.
+                make_account(
+                    2, active=True,
+                    entry=make_entry(0.0, 99.0, scoped=[("Fable", 70.0)]),
+                ),
+            ],
+            tmp_path,
+        )
+        lines = await self._bars(tmp_path, fleet=fleet)
+        found = {}
+        for line in lines:
+            match = re.match(r"\s+(\S+):\s+(\d+)%\s+[━╸╌─]", line)
+            if match:
+                found[match.group(1)] = int(match.group(2))
+        assert found == {"5h": 1, "7d": 1, "Fable": 1}, (
+            f"uncapped this reads 5h 200% and Fable 45% — quota behind a "
+            f"spent weekly window that expires with it — got {found}"
+        )
 
     async def test_each_bar_states_how_long_its_fuel_lasts(
         self, tmp_path, fake_fleet_engine
@@ -3087,9 +3159,11 @@ class TestTheTankReading:
             match = re.match(r"\s+(\S+):\s+\d+% (≈\S+)\s+[━╸╌─]", line)
             if match:
                 found[match.group(1)] = match.group(2)
-        # 5h: (100-0)+(100-0)+(100-92)=208% / 0.010%/s = 5.8h;
-        # 7d: 47% / 0.0008 = 16h;  Fable: 45% / 0.0011 = 11h.
-        assert found == {"5h": "≈6h", "7d": "≈16h", "Fable": "≈11h"}, found
+        # Reachable points, not nominal ones — a runway built on quota the
+        # weekly window blocks is a promise the fleet cannot keep.
+        # 5h: 47% / 0.010%/s = 1.3h; 7d: 47% / 0.0008 = 16h;
+        # Fable: 30% / 0.0011 = 7.6h.
+        assert found == {"5h": "≈1h", "7d": "≈16h", "Fable": "≈8h"}, found
 
     async def test_an_idle_machine_shows_no_runway(
         self, tmp_path, fake_fleet_engine

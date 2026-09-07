@@ -150,20 +150,43 @@ def window_segment(
     account-wide sense used by :func:`segment_for`: on the session bar an
     account with no 5-hour headroom is genuinely unusable right now, while on
     the weekly bar the same account may still have a week's quota intact.
+
+    CAPPED BY THE ACCOUNT-WIDE WEEKLY WINDOW, because quota you cannot reach
+    is not fuel. The 7-day window counts a SUPERSET of what any other window
+    counts — every request moves it — so nothing above its headroom is
+    spendable, whatever the other window says it holds. Measured on a live
+    fleet: two accounts sat at 7d 100% while their 5-hour windows read 100%
+    and 95% free, and the session row added those in and announced a tank of
+    489% against 51% that could actually be spent, nearly ten times over. A
+    per-model window is worse than merely unreachable — it shares the 7-day
+    window's reset, so its excess is never spent, only lost.
+
+    Not capped by the 5-hour window in the other direction: that one recycles
+    within the day, so weekly quota sitting behind it is deferred rather than
+    wasted, which is a different fact and already drawn as one.
     """
-    for name, pct, resets_at in oauth.relevant_windows(usage, models):
+    windows = oauth.relevant_windows(usage, models)
+    weekly_left = next(
+        (max(0.0, 100.0 - pct) for name, pct, _ in windows if name == "7d"), None
+    )
+    for name, pct, resets_at in windows:
         if name != label:
             continue
+        headroom = max(0.0, 100.0 - pct)
+        reachable = (
+            headroom if label == "7d" or weekly_left is None
+            else min(headroom, weekly_left)
+        )
         return FleetSegment(
             number=number,
             label=alias or email.split("@", 1)[0],
             email=email,
-            headroom_pct=max(0.0, 100.0 - pct),
+            headroom_pct=reachable,
             reset_ts=parse_reset_ts(resets_at),
             risk=waste_risk(usage, models, now),
             is_active=is_active,
             window=label,
-            blocked=pct >= 100.0,
+            blocked=pct >= 100.0 or reachable <= 0,
             unknown=False,
         )
     return None

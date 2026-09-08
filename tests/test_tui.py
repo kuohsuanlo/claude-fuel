@@ -3175,6 +3175,59 @@ class TestTheTankReading:
             f"spent weekly window that expires with it — got {found}"
         )
 
+    async def test_a_row_prints_its_own_windows_percent_not_the_cap(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """REPORTED LIVE: "session 5h limit 都不考慮的?" — the session row read
+        `2 97% · 6 100% · 5 100% · 3 100%` for four accounts whose 5-hour
+        windows were untouched. Capping the segment's headroom made the bar
+        honest about fuel and then that same number got printed in the list,
+        so the weekly limit appeared wearing the session row's label.
+
+        The bar length stays on reachable points; this list is the state of
+        the limit the row names."""
+        import json as _json
+        import re
+        import time
+
+        from claude_swap.usage_store import UsageEntry
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        def entry(five, seven, fable):
+            return UsageEntry(
+                last_good={
+                    "five_hour": {"pct": five, "resets_at": _iso_in(3600)},
+                    "seven_day": {"pct": seven, "resets_at": _iso_in(90 * 3600)},
+                    "scoped": [
+                        {"name": "Fable", "pct": fable,
+                         "resets_at": _iso_in(90 * 3600)}
+                    ],
+                },
+                fetched_at=time.time() - 5.0, age_s=5.0,
+            )
+        fleet = FakeSwitcher(
+            [
+                # Weekly spent, 5-hour window completely fresh.
+                make_account(1, active=True, entry=entry(0.0, 100.0, 100.0)),
+                make_account(2, entry=entry(35.0, 96.0, 72.0)),
+            ],
+            tmp_path,
+        )
+        lines = await self._bars(tmp_path, fleet=fleet)
+        session = next(line for line in lines if line.lstrip().startswith("5h:"))
+        assert re.search(r"1 0%", session), (
+            f"account 1 has not touched its 5-hour window; capped it reads "
+            f"100% — got {session!r}"
+        )
+        assert re.search(r"2 35%", session), session
+        model = next(line for line in lines if line.lstrip().startswith("Fable:"))
+        assert re.search(r"2 72%", model), (
+            f"account 2's Fable window is at 72%, not at its weekly cap "
+            f"— got {model!r}"
+        )
+
     async def test_each_bar_states_how_long_its_fuel_lasts(
         self, tmp_path, fake_fleet_engine
     ):

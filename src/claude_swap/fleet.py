@@ -59,6 +59,21 @@ class FleetSegment:
     # as a percent of any other window — the exact mixing this screen keeps
     # having to unlearn.
     window: str = ""
+    # THIS WINDOW'S OWN UNSPENT PERCENT, before the account-wide weekly cap
+    # that `headroom_pct` carries. The two answer different questions and a
+    # row needs both: `headroom_pct` is FUEL (what can actually be spent, so
+    # the bar length and the tank never promise quota the weekly window
+    # blocks), while this is the WINDOW'S STATE, which is what a row labelled
+    # "5h" claims to be showing. Printing the capped value in that list said
+    # an account's 5-hour window was 96% used when it was at 35% — the
+    # weekly limit wearing the session row's label.
+    own_headroom_pct: float = -1.0
+
+    @property
+    def window_headroom_pct(self) -> float:
+        """This window's own unspent percent, falling back to the capped one
+        for segments built before the distinction existed."""
+        return self.headroom_pct if self.own_headroom_pct < 0 else self.own_headroom_pct
 
     @property
     def deadline_text(self) -> str:
@@ -182,6 +197,7 @@ def window_segment(
             label=alias or email.split("@", 1)[0],
             email=email,
             headroom_pct=reachable,
+            own_headroom_pct=headroom,
             reset_ts=parse_reset_ts(resets_at),
             risk=waste_risk(usage, models, now),
             is_active=is_active,

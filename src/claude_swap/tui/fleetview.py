@@ -1510,7 +1510,14 @@ class FleetScreen(Screen):
                 if position:
                     text.append(" · ", style=palette.track)
                 text.append(f"{segment.number} ", style=palette.muted)
-                text.append(f"{100 - segment.headroom_pct:.0f}%", style=colour)
+                # THE WINDOW'S OWN NUMBER, not the reachable one. A row
+                # labelled "5h" that prints the weekly cap says an untouched
+                # 5-hour window is 100% used. The bar beside it stays on
+                # reachable points — length is fuel, this list is the state
+                # of the limit the row names.
+                text.append(
+                    f"{100 - segment.window_headroom_pct:.0f}%", style=colour
+                )
                 countdown = segment.countdown_text(now)
                 if countdown:
                     text.append(f" {countdown}", style=palette.muted)

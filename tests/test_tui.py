@@ -3037,6 +3037,75 @@ class TestHandoverNote:
         assert "takes over" not in text
 
 
+class TestTheReadingIsCarriedForward:
+    """Between fetches the percent is a still photograph. The burn sensor is
+    not: it reads this machine's transcripts every second."""
+
+    @staticmethod
+    def _screen(rates):
+        import types
+
+        from claude_swap.tui.fleetview import FleetScreen
+
+        screen = FleetScreen.__new__(FleetScreen)
+        screen._tracker = types.SimpleNamespace(
+            estimate=lambda acct, window=None, **kw: types.SimpleNamespace(
+                pct_per_s=rates.get(window)
+            )
+        )
+        return screen
+
+    @staticmethod
+    def _account(*, active=True, fetched=1000.0):
+        import types
+
+        return types.SimpleNamespace(
+            number="1",
+            is_active=active,
+            usage=types.SimpleNamespace(
+                fetched_at=fetched,
+                last_good={
+                    "five_hour": {"pct": 50.0},
+                    "seven_day": {"pct": 20.0},
+                    "scoped": [{"name": "Fable", "pct": 99.5}],
+                },
+            ),
+        )
+
+    def test_the_active_account_moves_at_the_measured_rate(self):
+        """The endpoint allows ~28-30 requests an hour, so a reading can be
+        ten minutes old while the machine burns a point a minute through it."""
+        screen = self._screen({"5h": 0.01, "7d": 0.002, "Fable": 0.0})
+        live = screen._live_usage(self._account(), 1000.0 + 120.0)
+        assert live["five_hour"]["pct"] == pytest.approx(51.2)
+        assert live["seven_day"]["pct"] == pytest.approx(20.24)
+
+    def test_an_account_that_is_not_being_spent_does_not_move(self):
+        """Advancing an idle account would invent movement, not report it."""
+        screen = self._screen({"5h": 0.01})
+        live = screen._live_usage(self._account(active=False), 1000.0 + 600.0)
+        assert live["five_hour"]["pct"] == 50.0
+
+    def test_projection_stops_at_the_limit(self):
+        screen = self._screen({"Fable": 0.01})
+        live = screen._live_usage(self._account(), 1000.0 + 600.0)
+        assert live["scoped"][0]["pct"] == 100.0
+
+    def test_an_unmeasured_window_is_left_alone(self):
+        """No rate is not a rate of zero, but it is not a licence to guess
+        either — the reading stands until the next fetch replaces it."""
+        screen = self._screen({})
+        live = screen._live_usage(self._account(), 1000.0 + 600.0)
+        assert live["five_hour"]["pct"] == 50.0
+
+    def test_it_only_ever_adds_utilisation(self):
+        """A negative rate would show MORE headroom than was measured, which
+        is the direction that hides a wall."""
+        screen = self._screen({"5h": -0.05})
+        live = screen._live_usage(self._account(), 1000.0 + 600.0)
+        assert live["five_hour"]["pct"] == 50.0
+
+
 @pytest.mark.asyncio
 class TestTheTankReading:
     """The number in front of each bar: how much fuel the fleet holds."""

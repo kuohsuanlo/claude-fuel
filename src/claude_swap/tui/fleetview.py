@@ -1145,7 +1145,7 @@ class FleetScreen(Screen):
                 number=account.number,
                 email=account.email,
                 alias=account.alias,
-                usage=account.usage.last_good,
+                usage=self._live_usage(account, now),
                 models=models,
                 now=now,
                 is_active=account.is_active,
@@ -1312,6 +1312,75 @@ class FleetScreen(Screen):
         ramp = self._rank_colours(len(ordered), palette)
         return {seg.number: ramp[i] for i, seg in enumerate(ordered)}
 
+    def _live_usage(self, account, now: float) -> dict | None:
+        """One account's windows, advanced by what has burned since the read.
+
+        THE API IS THE SLOW INSTRUMENT, NOT THE ONLY ONE. Utilization can be
+        fetched roughly every three minutes per account (the endpoint allows
+        ~28-30 requests an hour and a 429 costs six), so between reads the
+        printed percent is a still photograph — measured live, a bar sat on
+        the same number for ten minutes while the machine burned a point a
+        minute through it.
+
+        The burn sensor already knows what happened in that gap: it reads this
+        machine's transcripts every second, and the calibration converts those
+        tokens into percent of THIS account's THIS window. So the reading is
+        carried forward at the rate actually being spent, and snaps back to
+        truth on the next fetch.
+
+        ONLY THE ACTIVE ACCOUNT MOVES. The others are not being spent, so
+        advancing them would invent movement rather than report it.
+
+        Projection only ever ADDS utilization — the direction that understates
+        what is left. An overshoot shows less headroom than there is and is
+        corrected within a poll; the opposite would hide a wall.
+        """
+        usage = account.usage.last_good
+        if not isinstance(usage, dict) or not account.is_active:
+            return usage
+        tracker = getattr(self, "_tracker", None)
+        fetched = getattr(account.usage, "fetched_at", None)
+        if tracker is None or not fetched:
+            return usage
+        age = now - fetched
+        if age <= 0:
+            return usage
+        moved: dict = dict(usage)
+        for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+            window = usage.get(key)
+            if isinstance(window, dict):
+                bumped = self._advance(window, tracker, account.number, label, age)
+                if bumped is not None:
+                    moved[key] = bumped
+        scoped = usage.get("scoped")
+        if isinstance(scoped, list):
+            rebuilt = []
+            for entry in scoped:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                bumped = (
+                    self._advance(entry, tracker, account.number, name, age)
+                    if isinstance(name, str) else None
+                )
+                rebuilt.append(bumped if bumped is not None else entry)
+            moved["scoped"] = rebuilt
+        return moved
+
+    @staticmethod
+    def _advance(window: dict, tracker, number: str, label, age: float) -> dict | None:
+        """``window`` with its percent carried forward, or None if it cannot be."""
+        pct = window.get("pct")
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool) or pct >= 100.0:
+            return None
+        try:
+            rate = tracker.estimate(number, label).pct_per_s
+        except Exception:  # pragma: no cover - sensing must never break a frame
+            return None
+        if not rate or rate <= 0:
+            return None
+        moved = dict(window)
+        moved["pct"] = min(100.0, float(pct) + rate * age)
+        return moved
+
     def _window_segments(self, label: str, now: float) -> list[fleet.FleetSegment]:
         snapshot = self.app.snapshot
         if snapshot is None:
@@ -1319,7 +1388,7 @@ class FleetScreen(Screen):
         built = [
             fleet.window_segment(
                 number=account.number, email=account.email, alias=account.alias,
-                usage=account.usage.last_good, label=label,
+                usage=self._live_usage(account, now), label=label,
                 # The DECLARED set: a row exists for every window the user
                 # asked to care about. WHETHER IT GATES is a separate fact,
                 # drawn as a label rather than by deleting the row.

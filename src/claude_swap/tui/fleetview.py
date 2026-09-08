@@ -1163,7 +1163,15 @@ class FleetScreen(Screen):
         palette = Palette.from_theme(self.app.current_theme)
         self._wake_engine_if_a_limit_became_relevant()
         segments = self._segments(now)
-        self._render_headline(segments, now, palette)
+        # THE ACCOUNT-WIDE WEEKLY WINDOW, not each account's binding one.
+        # `segment_for` collapses an account to its MOST-USED weekly window,
+        # which answers "how much of the gating work-mix can this account
+        # serve" — a different question. Measured live: an account held 11
+        # points of 7d expiring in under five hours and spendable by the Opus
+        # work actually running, but its Fable window was at 100%, so the
+        # collapse read its headroom as zero and this line said "nothing
+        # expiring within 24h" while the list below showed the account.
+        self._render_headline(self._window_segments("7d", now), now, palette)
         self._render_status(palette)
         self._render_bars(segments, now, palette)
         self._render_burn(palette)

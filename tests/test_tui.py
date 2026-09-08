@@ -2881,6 +2881,56 @@ class TestHeadlineNamesTheLimit:
         assert "user2 7d 28% expiring within 24h" in headline, headline
         assert "pts" not in headline
 
+    async def test_a_spent_model_window_does_not_hide_expiring_weekly_quota(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """REPORTED LIVE. An account held 11 points of 7d expiring in under
+        five hours — spendable by the Opus work actually running — but its
+        Fable window was at 100%. Collapsing the account to its MOST-USED
+        weekly window read its headroom as zero, so this line said "nothing
+        expiring within 24h" while the list two rows down showed the account.
+        The 7-day window is what actually expires and what ANY work consumes;
+        a spent per-model window only stops that model."""
+        import json as _json
+        import time
+
+        from claude_swap.tui.app import CswapApp
+        from claude_swap.usage_store import UsageEntry
+
+        (tmp_path / "settings.json").write_text(_json.dumps({
+            "schemaVersion": 1, "autoswitch": {"model": "all"},
+        }))
+        accounts = [
+            make_account(1, active=True, entry=UsageEntry(
+                last_good={
+                    "five_hour": {"pct": 0.0, "resets_at": _iso_in(3600)},
+                    "seven_day": {"pct": 34.0, "resets_at": _iso_in(150 * 3600)},
+                    "scoped": [
+                        {"name": "Fable", "pct": 32.0,
+                         "resets_at": _iso_in(150 * 3600)}
+                    ],
+                },
+                fetched_at=time.time() - 5.0, age_s=5.0,
+            )),
+            make_account(2, entry=UsageEntry(
+                last_good={
+                    "five_hour": {"pct": 0.0, "resets_at": _iso_in(3600)},
+                    "seven_day": {"pct": 89.0, "resets_at": _iso_in(4.7 * 3600)},
+                    # Spent — but only Fable work is stopped by it.
+                    "scoped": [
+                        {"name": "Fable", "pct": 100.0,
+                         "resets_at": _iso_in(4.7 * 3600)}
+                    ],
+                },
+                fetched_at=time.time() - 5.0, age_s=5.0,
+            )),
+        ]
+        app = CswapApp(FakeSwitcher(accounts, tmp_path), start="fleet")
+        async with app.run_test(size=(140, 46)) as pilot:
+            await settle(pilot)
+            headline = await self._headline(app)
+        assert "user2 7d 11% expiring within 24h" in headline, headline
+
     async def test_more_expiring_quotas_are_counted_not_summed(
         self, tmp_path, fake_fleet_engine
     ):

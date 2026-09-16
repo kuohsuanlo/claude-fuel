@@ -1312,6 +1312,68 @@ class FleetScreen(Screen):
         ramp = self._rank_colours(len(ordered), palette)
         return {seg.number: ramp[i] for i, seg in enumerate(ordered)}
 
+    @staticmethod
+    def _token_dead(account) -> bool:
+        """Whether this account's refresh-token lineage is dead.
+
+        Read off the usage row the collector already keeps, so it costs
+        nothing: one `invalid_grant` condemns the generation that was posted.
+        """
+        entry = getattr(account, "usage", None)
+        checker = getattr(entry, "token_dead", None)
+        if not callable(checker):
+            return bool(getattr(entry, "auth_dead_strikes", 0))
+        try:
+            return bool(checker())
+        except Exception:  # pragma: no cover - a render must not raise
+            return False
+
+    def _token_expiry_note(self, account, palette: Palette) -> Text | None:
+        """``token 7h54m`` for the ACTIVE account, or None.
+
+        Only the active one: its credential is the live file, readable without
+        decrypting anything, and it is the only token a running session can
+        die on. The others are answered by `cfuel list --token-status`, which
+        decrypts and is far too expensive for a one-second frame.
+
+        An access token lasts hours and is renewed automatically well before
+        it lapses, so this is not normally an alarm — it is here so "how long
+        have I got" has an answer on screen instead of needing a command, and
+        so a renewal that has STOPPED happening shows up as a number that
+        keeps falling.
+        """
+        if not getattr(account, "is_active", False):
+            return None
+        expires = self._live_token_expiry()
+        if expires is None:
+            return None
+        left = expires - time.time()
+        if left <= 0:
+            return Text("token expired", style=f"bold {palette.sev_crit}")
+        style = palette.sev_warn if left < 900 else palette.muted
+        return Text(f"token {_short_duration(left / 3600.0)}", style=style)
+
+    @staticmethod
+    def _live_token_expiry() -> float | None:
+        """Epoch seconds the live credential lapses, or None if unreadable."""
+        import json
+
+        from claude_swap.paths import get_claude_config_home
+
+        try:
+            raw = json.loads(
+                (get_claude_config_home() / ".credentials.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        oauth = raw.get("claudeAiOauth") if isinstance(raw, dict) else None
+        stamp = oauth.get("expiresAt") if isinstance(oauth, dict) else None
+        if not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
+            return None
+        return stamp / 1000.0
+
     def _live_usage(self, account, now: float) -> dict | None:
         """One account's windows, advanced by what has burned since the read.
 
@@ -2009,6 +2071,20 @@ class FleetScreen(Screen):
             text.append(f" [{account.display_tag}]", style=palette.muted)
             if account.is_active:
                 text.append("  (active)", style=f"bold {palette.accent}")
+            # A DEAD REFRESH LINEAGE IS NOT A RATE LIMIT, and nothing on this
+            # screen said so. `invalid_grant` means the stored token can never
+            # be renewed — the engine keeps rotating onto the account and every
+            # session it lands on dies with "Login expired". The fix is a login
+            # the tool cannot perform, so it has to be asked for here.
+            if self._token_dead(account):
+                text.append(
+                    "  re-login needed → claude /login, then: cfuel add",
+                    style=f"bold {palette.sev_crit}",
+                )
+            expiry = self._token_expiry_note(account, palette)
+            if expiry is not None:
+                text.append("  ")
+                text.append_text(expiry)
             if cursor and not account.is_active:
                 text.append("   ← enter to switch", style=palette.accent)
             elif cursor:

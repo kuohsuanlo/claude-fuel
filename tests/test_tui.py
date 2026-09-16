@@ -3037,6 +3037,62 @@ class TestHandoverNote:
         assert "takes over" not in text
 
 
+class TestTokenHealthIsOnScreen:
+    """A dead refresh lineage is not a rate limit, and the screen never said
+    so: the engine kept rotating onto the account and every session it landed
+    on died with "Login expired"."""
+
+    @staticmethod
+    def _account(dead, active=False):
+        import types
+
+        return types.SimpleNamespace(
+            is_active=active,
+            usage=types.SimpleNamespace(
+                auth_dead_strikes=1 if dead else 0,
+                token_dead=lambda: dead,
+            ),
+        )
+
+    def test_a_dead_refresh_lineage_is_reported(self):
+        from claude_swap.tui.fleetview import FleetScreen
+
+        assert FleetScreen._token_dead(self._account(True))
+        assert not FleetScreen._token_dead(self._account(False))
+
+    def test_a_row_without_the_check_falls_back_to_the_strike_count(self):
+        import types
+
+        from claude_swap.tui.fleetview import FleetScreen
+
+        legacy = types.SimpleNamespace(
+            usage=types.SimpleNamespace(auth_dead_strikes=1)
+        )
+        assert FleetScreen._token_dead(legacy)
+
+    def test_only_the_active_account_shows_an_expiry(self, monkeypatch):
+        from claude_swap.tui.fleetview import FleetScreen
+        from claude_swap.tui.theme import CSWAP_LIGHT, Palette
+
+        screen = FleetScreen.__new__(FleetScreen)
+        monkeypatch.setattr(
+            FleetScreen, "_live_token_expiry", staticmethod(lambda: 2e9)
+        )
+        palette = Palette.from_theme(CSWAP_LIGHT)
+        assert screen._token_expiry_note(self._account(False), palette) is None
+        note = screen._token_expiry_note(self._account(False, active=True), palette)
+        assert note is not None and note.plain.startswith("token ")
+
+    def test_an_unreadable_credential_says_nothing(self, tmp_path, monkeypatch):
+        """Silence beats a fabricated countdown."""
+        from claude_swap.tui.fleetview import FleetScreen
+
+        monkeypatch.setattr(
+            "claude_swap.paths.get_claude_config_home", lambda: tmp_path
+        )
+        assert FleetScreen._live_token_expiry() is None
+
+
 class TestTheReadingIsCarriedForward:
     """Between fetches the percent is a still photograph. The burn sensor is
     not: it reads this machine's transcripts every second."""

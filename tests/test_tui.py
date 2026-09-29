@@ -2604,6 +2604,8 @@ class TestRunningInstancesShowActivity:
 
         assert _model_label("claude-fable-5") == "Fable 5"
         assert _model_label("claude-fable-5-1") == "Fable 5.1"
+        assert _model_label("claude-opus-5-5") == "Opus 5.5"
+        assert _model_label("claude-sonnet-5-5") == "Sonnet 5.5"
         assert _model_label("claude-opus-4-8") == "Opus 4.8"
         assert _model_label("claude-haiku-4-5-20251001") == "Haiku 4.5"
         # The context-window suffix is not part of the model's name.
@@ -2817,6 +2819,11 @@ class TestLifetimeTokens:
         assert _model_price("claude-fable-5-1") == _PRICES["claude-fable-5-1"]
         assert _model_price("claude-fable-5-1") != _model_price("claude-fable-5")
         assert _model_price("claude-fable-5-1")[2] == pytest.approx(0.25)
+        # Same trap on the other two families: 5.5 starts with 5, and 5.5's
+        # cache read is $0.20 against Opus 5's $0.50 on 16k live requests.
+        assert _model_price("claude-opus-5-5") == (4.0, 20.0, 0.2)
+        assert _model_price("claude-opus-5") == (5.0, 25.0, 0.5)
+        assert _model_price("claude-sonnet-5-5") == (2.0, 10.0, 0.2)
         assert _model_price("claude-fable-5")[2] == pytest.approx(1.0)
 
     def test_a_path_encodes_to_its_transcript_directory(self):

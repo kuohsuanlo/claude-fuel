@@ -161,17 +161,19 @@ def _encoded_project(path: str) -> str:
 #: reads are 63 of this machine's 66 billion tokens, so a shared 0.1× would
 #: overstate a 5.1 row four-fold. The official table lists it per model; so
 #: does this one.
-PRICE_DATE = "2026-09-03"
+PRICE_DATE = "2026-09-29"
 _PRICES = {
     "claude-fable-5-1": (10.0, 50.0, 0.25),
     "claude-mythos-5-1": (10.0, 50.0, 0.25),
     "claude-fable-5": (10.0, 50.0, 1.0),
     "claude-mythos-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.2),
     "claude-opus-5": (5.0, 25.0, 0.5),
     "claude-opus-4-8": (5.0, 25.0, 0.5),
     "claude-opus-4-7": (5.0, 25.0, 0.5),
     "claude-opus-4-6": (5.0, 25.0, 0.5),
     "claude-opus-4-5": (5.0, 25.0, 0.5),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.2),
     "claude-sonnet-5": (2.0, 10.0, 0.2),
     "claude-sonnet-4-6": (3.0, 15.0, 0.3),
     "claude-sonnet-4-5": (3.0, 15.0, 0.3),

@@ -1312,7 +1312,21 @@ class AutoSwitchEngine:
                 # policy asked.
                 trigger = settings.strategy
             else:
-                trigger = "at-limit" if active_headroom <= 0 else "proactive"
+                # THE WALL IS AN ESCAPE, NOT A CHOICE. An active that cannot
+                # absorb one more tick of the current burn is not a place to
+                # stay, however far its reading is from 100. Classified as a
+                # proactive move it met two rules that are each right on their
+                # own — with everything over the threshold the ranking orders
+                # by WHO RETURNS FIRST (the active, back in 1.6h, beats a peer
+                # back in 138h), and the no-return bar refuses to undo the
+                # engine's last move — and the pair held an account at 5h 99%
+                # while the fleet's only usable quota went unspent. Reported
+                # live. Both rules are proactive-only because a proactive move
+                # is optional; this one is not. Zero margin (guard off, or
+                # nothing measured) reduces to the old `<= 0`, so an unmeasured
+                # rate still cannot tighten a policy the user did not set.
+                wall = self._landing_margin(settings, current)
+                trigger = "at-limit" if active_headroom <= wall else "proactive"
         else:
             if usage.get(current) == USAGE_TOKEN_EXPIRED:
                 # Expired and the refresh could not complete this pass (lock
@@ -2291,7 +2305,12 @@ class AutoSwitchEngine:
                 continue  # itself at its limit — never a target
             if (
                 trigger not in PROACTIVE_TRIGGERS
-                and not all_above
+                # `all_above` normally hands a dead fleet to the recovery
+                # order below. An active that still HOLDS points (the wall
+                # case, classified at-limit while above zero) is not dead:
+                # staying is an option, so nothing that is no better than it
+                # may be chosen — two walls must not trade places.
+                and (not all_above or (active_headroom or 0.0) > 0.0)
                 and active_headroom is not None
                 and h <= active_headroom
             ):

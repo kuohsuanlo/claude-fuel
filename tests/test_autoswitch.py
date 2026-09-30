@@ -3206,6 +3206,87 @@ class TestAProactiveMoveNeverLandsShort:
         assert ranked == ["1"]
 
 
+class TestTheWallIsAnEscapeNotAChoice:
+    """Reported live: "session limit 都99%還沒幫我切". The active account sat at
+    5h 99% for its last few minutes while the fleet's only usable quota — 5
+    points of another account's 7d — went unspent, and the work then stalled
+    until the window came back 1.6 hours later.
+
+    Two rules that are each right on their own combined into it. With every
+    account over the threshold the ranking orders candidates by WHO RETURNS
+    FIRST, and the active (back in 1.6h) beats the peer (back in 138h). And the
+    no-return bar refuses to undo the engine's own last move. Both are
+    proactive-only on purpose, because a proactive move is optional. This one
+    is not: an account that cannot absorb one more tick of the current burn is
+    not a place to stay, so it is classified as the escape it is.
+    """
+
+    @staticmethod
+    def _iso(clock, hours):
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(
+            clock.now + hours * 3600, tz=timezone.utc
+        ).isoformat()
+
+    def _fleet(self, harness):
+        iso = lambda h: self._iso(harness.clock, h)
+        return {
+            # Active: 5h nearly gone, back in 1.6h, plenty of week behind it.
+            "1": {"five_hour": {"pct": 99.0, "resets_at": iso(1.6)},
+                  "seven_day": {"pct": 35.0, "resets_at": iso(160)}},
+            # The account the engine left: 5 points of week, back in 138h.
+            "2": {"five_hour": {"pct": 0.0, "resets_at": iso(4)},
+                  "seven_day": {"pct": 95.0, "resets_at": iso(138)}},
+            # Weekly spent.
+            "3": {"five_hour": {"pct": 0.0, "resets_at": iso(4)},
+                  "seven_day": {"pct": 100.0, "resets_at": iso(50)}},
+        }
+
+    def test_an_active_that_cannot_absorb_a_tick_moves_to_whatever_has_room(
+        self, harness, monkeypatch
+    ):
+        harness.engine._mutate_state(lambda st: (
+            st.__setitem__("lastSwitchFrom", "2"),
+            st.__setitem__("lastSwitchTo", "1"),
+            st.__setitem__("leftHeadroom", 5.0),
+        ))
+        # One tick of the live burn is a point; the active has exactly that.
+        monkeypatch.setattr(harness.engine, "_landing_margin", lambda *a: 1.0)
+        outcome = harness.tick_with_usage(self._fleet(harness))
+        assert outcome is TickOutcome.SWITCHED, (
+            "held on an account with one point left while another had five — "
+            "the work stalls for the 1.6 hours it takes to come back"
+        )
+        assert harness.active_number() == 2
+
+    def test_an_active_with_room_to_spare_still_holds(self, harness, monkeypatch):
+        """The change reads the wall, not the threshold: an account that can
+        still absorb a tick is left to the ordinary rules."""
+        usage = self._fleet(harness)
+        usage["1"]["five_hour"]["pct"] = 90.0
+        harness.engine._mutate_state(lambda st: (
+            st.__setitem__("lastSwitchFrom", "2"),
+            st.__setitem__("lastSwitchTo", "1"),
+            st.__setitem__("leftHeadroom", 5.0),
+        ))
+        monkeypatch.setattr(harness.engine, "_landing_margin", lambda *a: 1.0)
+        harness.tick_with_usage(usage)
+        assert harness.active_number() == 1
+
+    def test_it_never_moves_to_something_no_better(self, harness, monkeypatch):
+        """An escape must be an improvement: two walls do not trade places."""
+        usage = self._fleet(harness)
+        usage["2"]["seven_day"]["pct"] = 99.0      # one point, same as active
+        harness.engine._mutate_state(lambda st: (
+            st.__setitem__("lastSwitchFrom", "2"),
+            st.__setitem__("lastSwitchTo", "1"),
+        ))
+        monkeypatch.setattr(harness.engine, "_landing_margin", lambda *a: 1.0)
+        harness.tick_with_usage(usage)
+        assert harness.active_number() == 1
+
+
 class TestConsumeFirstStrategy:
     def _harness(self, temp_home: Path) -> EngineHarness:
         h = EngineHarness(temp_home, strategy="consume-first")

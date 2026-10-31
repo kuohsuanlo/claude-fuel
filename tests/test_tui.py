@@ -1873,6 +1873,27 @@ class TestFleetScreen:
             # own segment; ordering is inside the bar, not a separate legend.
             assert "user2" in bars
 
+    async def test_active_without_session_limit_greys_the_5h_row(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Plans without a 5h limit: the 5h gauge cannot stop the active
+        account, so it is greyed with the reason, and the others say so."""
+        fake = FakeSwitcher(
+            [
+                make_account(1, active=True, entry=make_entry(None, 28.0)),
+                make_account(2, entry=make_entry(40.0, 40.0)),
+            ],
+            tmp_path,
+        )
+        app = _fleet_app(fake)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await settle(pilot)
+            bars = self._text(app, "#fleet-bars")
+            assert "1 no limit" in bars
+            assert "active account: no 5h limit" in bars
+            accounts = self._text(app, "#fleet-accounts")
+            assert "5h:    no limit" in accounts or "5h: no limit" in accounts
+
     async def test_active_account_is_marked_on_the_bar(
         self, tmp_path, fake_fleet_engine
     ):

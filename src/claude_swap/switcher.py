@@ -135,6 +135,9 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
             rows.append(("$$", f"{pct:>3.0f}%   resets {cell[1]:<16}  ${used:,.2f} / ${limit:,.2f}"))
         else:
             rows.append(("$$", f"{pct:>3.0f}%   ${used:,.2f} / ${limit:,.2f}"))
+    if oauth.has_no_session_limit(usage):
+        # Said rather than omitted: a missing 5h line reads as "not fetched".
+        rows.append(("5h", "no limit"))
     for label, w in (("5h", usage.get("five_hour")), ("7d", usage.get("seven_day"))):
         if w:
             # Pace only applies to the weekly (7d) window, never 5h (issue #125).

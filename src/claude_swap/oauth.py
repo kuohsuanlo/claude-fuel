@@ -509,6 +509,19 @@ def build_usage_result(data: dict) -> dict | None:
     return result if result else None
 
 
+def has_no_session_limit(usage: dict | None) -> bool:
+    """This account is measured and simply has no 5-hour window.
+
+    Some plans dropped the session limit: the API stops sending
+    ``five_hour`` (and the ``session`` entry in ``limits``) while the weekly
+    windows keep coming. Absence only means "no limit" when something else
+    WAS measured — an empty or missing reading is unknown, not unlimited.
+    """
+    if not isinstance(usage, dict) or usage.get("five_hour"):
+        return False
+    return bool(usage.get("seven_day") or usage.get("scoped"))
+
+
 def relevant_windows(
     usage: dict | None, models: Sequence[str] = ()
 ) -> list[tuple[str, float, str | None]]:

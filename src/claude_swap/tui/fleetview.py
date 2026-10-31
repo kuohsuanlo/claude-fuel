@@ -1464,6 +1464,24 @@ class FleetScreen(Screen):
         ]
         return [segment for segment in built if segment is not None]
 
+    def _unlimited_session_numbers(self) -> list[str]:
+        """Accounts measured to have no 5-hour window at all."""
+        snapshot = self.app.snapshot
+        if snapshot is None:
+            return []
+        return [
+            account.number
+            for account in snapshot.accounts
+            if account.kind != "api_key"
+            and oauth.has_no_session_limit(account.usage.last_good)
+        ]
+
+    def _active_number(self) -> str | None:
+        snapshot = self.app.snapshot
+        if snapshot is None:
+            return None
+        return next((a.number for a in snapshot.accounts if a.is_active), None)
+
     def _model_label(self) -> str | None:
         """The per-model window's own name (``Fable``), read from the data."""
         snapshot = self.app.snapshot
@@ -1568,7 +1586,7 @@ class FleetScreen(Screen):
             if label is None:
                 continue
             row = self._window_segments(label, now)
-            if row:
+            if row or (label == "5h" and self._unlimited_session_numbers()):
                 rows.append((label, row))
         if not rows:
             self.query_one("#fleet-bars", Static).update(
@@ -1579,6 +1597,8 @@ class FleetScreen(Screen):
         width = self._bar_width()
         text = Text(no_wrap=True, overflow="ellipsis")
         label_width = max(len(label) for label, _ in rows)
+        unlimited = self._unlimited_session_numbers()
+        active_unlimited = self._active_number() in unlimited
         colour_of = self._account_colours(segments, palette)
         # Furthest deadline first, soonest last — literally the REVERSE of the
         # colour ranking, read off the same list instead of re-sorted, so the
@@ -1594,12 +1614,20 @@ class FleetScreen(Screen):
         # three gauges keep a shared left edge — the spectrum only reads as
         # one instrument when the bars start together.
         runway_text = {
-            label: self._runway_text(label, row) for label, row in rows
+            label: self._runway_text(label, row) for label, row in rows if row
         }
         runway_width = max(
             (len(value) for value in runway_text.values() if value), default=0
         )
         for index, (label, row) in enumerate(rows):
+            row_start = len(text)
+            if not row:
+                # NO ACCOUNT HAS THIS WINDOW. Kept as a greyed line rather
+                # than dropped, so the gauge does not just vanish unexplained.
+                if index:
+                    text.append("\n")
+                text.append(f"  {label + ':':<{label_width + 1}} no limit", style=palette.track)
+                continue
             row = sorted(row, key=lambda s: order.get(s.number, 0))
             colours = [colour_of.get(seg.number, palette.muted) for seg in row]
             weights = self._account_weights(row)
@@ -1654,6 +1682,13 @@ class FleetScreen(Screen):
                 countdown = segment.countdown_text(now)
                 if countdown:
                     text.append(f" {countdown}", style=palette.muted)
+            if label == "5h":
+                # Accounts without a session limit are not in the bar (there
+                # is no 5h tank to draw), but leaving them out of the list
+                # reads as "not measured".
+                for number in sorted(unlimited, key=lambda n: order.get(n, 0)):
+                    text.append(" · ", style=palette.track)
+                    text.append(f"{number} no limit", style=palette.muted)
             # ▲ BELOW: where quota is being drawn from right now. Two markers
             # rather than one because "what dies first" and "what I am
             # spending" are different questions, and the whole point of the
@@ -1675,6 +1710,14 @@ class FleetScreen(Screen):
                 text.append("\n")
                 text.append(" " * gutter)
                 text.append(note)
+            if label == "5h" and active_unlimited:
+                # THE ACTIVE ACCOUNT HAS NO 5h LIMIT, so nothing on this row
+                # can stop it right now: grey the whole block, gauge and
+                # markers alike, and say why underneath.
+                text.stylize(palette.track, row_start, len(text))
+                text.append("\n")
+                text.append(" " * gutter)
+                text.append("active account: no 5h limit", style=palette.muted)
         text.append("\n")
         # ONCE, WHEN THE TEXT IS COMPLETE. This lived at the end of `_marker`,
         # so the widget was published while the block was still being built —

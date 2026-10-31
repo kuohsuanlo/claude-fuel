@@ -6288,7 +6288,7 @@ class TestFormatUsageLines:
 
     def test_scoped_under_limit_has_no_marker(self):
         usage = {"scoped": [{"name": "Fable", "pct": 40.0, "clock": "21:59", "countdown": "3h"}]}
-        lines = _format_usage_lines(usage)
+        lines = _format_usage_lines(usage)[1:]  # [0] is "5h: no limit"
         assert len(lines) == 1
         assert lines[0].startswith("Fable:")
         assert "40%" in lines[0]
@@ -6299,7 +6299,7 @@ class TestFormatUsageLines:
     def test_scoped_without_clock_renders_pct_only(self):
         usage = {"scoped": [{"name": "Fable", "pct": 100.0}]}
         lines = _format_usage_lines(usage)
-        assert lines == ["Fable: 100%  (!)"]
+        assert lines == ["5h:    no limit", "Fable: 100%  (!)"]
 
     def test_countdown_recomputed_from_resets_at_not_cached_strings(self):
         # A measurement served from the store hours after its fetch still
@@ -6317,7 +6317,7 @@ class TestFormatUsageLines:
                 "countdown": "17h 0m",
             }
         }
-        line = _format_usage_lines(usage)[0]
+        line = _format_usage_lines(usage)[-1]
         assert "in 2h" in line
         assert "17h" not in line
 
@@ -6325,7 +6325,7 @@ class TestFormatUsageLines:
         # Entries persisted by older versions have no resets_at — the
         # fetch-time strings are the best available then.
         usage = {"seven_day": {"pct": 62.0, "clock": "15:59", "countdown": "17h 0m"}}
-        line = _format_usage_lines(usage)[0]
+        line = _format_usage_lines(usage)[-1]
         assert "resets 15:59" in line
         assert "in 17h 0m" in line
 
@@ -6338,7 +6338,7 @@ class TestFormatUsageLines:
                 "countdown": "17h 0m",
             }
         }
-        line = _format_usage_lines(usage)[0]
+        line = _format_usage_lines(usage)[-1]
         assert "resets 15:59" in line
         assert "in 17h 0m" in line
 
@@ -6358,9 +6358,17 @@ class TestFormatUsageLines:
                 "clock": "stale-clock",
             }
         }
-        line = _format_usage_lines(usage)[0]
+        line = _format_usage_lines(usage)[-1]
         assert f"resets {expected_clock}" in line
         assert "stale-clock" not in line
+
+    def test_missing_five_hour_beside_weekly_reads_no_limit(self):
+        """Plans without a session limit stop sending five_hour; saying so
+        beats a missing line, which reads as "not fetched"."""
+        usage = {"seven_day": {"pct": 27.0}, "scoped": [{"name": "Fable", "pct": 0.0}]}
+        lines = _format_usage_lines(usage)
+        assert lines[0] == "5h:    no limit"
+        assert lines[1].startswith("7d:")
 
     def test_no_scoped_key_renders_only_standard_windows(self):
         usage = {"five_hour": {"pct": 7.0}, "seven_day": {"pct": 72.0}}
@@ -6398,7 +6406,7 @@ class TestFormatUsageLines:
         now = 1_700_000_000.0
         resets_at = datetime.fromtimestamp(now, tz=timezone.utc) + timedelta(days=6)
         usage = {"seven_day": {"pct": 50.0, "resets_at": resets_at.isoformat()}}
-        line = _format_usage_lines(usage, now)[0]
+        line = _format_usage_lines(usage, now)[-1]
         assert "(ahead of pace)" in line
 
     def test_five_hour_never_shows_pace_marker(self):
@@ -6408,7 +6416,7 @@ class TestFormatUsageLines:
         now = 1_700_000_000.0
         resets_at = datetime.fromtimestamp(now, tz=timezone.utc) + timedelta(hours=4)
         usage = {"five_hour": {"pct": 90.0, "resets_at": resets_at.isoformat()}}
-        line = _format_usage_lines(usage, now)[0]
+        line = _format_usage_lines(usage, now)[-1]
         assert "pace" not in line
 
     def test_scoped_ahead_of_pace_marker_when_under_limit(self):
@@ -6417,7 +6425,7 @@ class TestFormatUsageLines:
         now = 1_700_000_000.0
         resets_at = datetime.fromtimestamp(now, tz=timezone.utc) + timedelta(days=6)
         usage = {"scoped": [{"name": "Fable", "pct": 50.0, "resets_at": resets_at.isoformat()}]}
-        line = _format_usage_lines(usage, now)[0]
+        line = _format_usage_lines(usage, now)[-1]
         assert "(ahead of pace)" in line
         assert "(!)" not in line
 
@@ -6428,7 +6436,7 @@ class TestFormatUsageLines:
 
         resets_at = datetime.now(timezone.utc) + timedelta(days=6)
         usage = {"seven_day": {"pct": 50.0, "resets_at": resets_at.isoformat()}}
-        line = _format_usage_lines(usage)[0]
+        line = _format_usage_lines(usage)[-1]
         assert "pace" not in line
 
     def test_no_pace_marker_within_suppression_window_after_reset(self):

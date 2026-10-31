@@ -1497,3 +1497,17 @@ class TestConsumeBusyIsDeterministic:
             k for k in oauth._DETERMINISTIC_REFRESH_ERRORS if k not in ERROR_NOTES
         ]
         assert not missing, missing
+
+
+class TestHasNoSessionLimit:
+    def test_weekly_without_five_hour_is_unlimited(self):
+        assert oauth.has_no_session_limit({"seven_day": {"pct": 27.0}})
+
+    def test_five_hour_present_is_limited(self):
+        assert not oauth.has_no_session_limit(
+            {"five_hour": {"pct": 1.0}, "seven_day": {"pct": 2.0}}
+        )
+
+    def test_nothing_measured_is_unknown_not_unlimited(self):
+        assert not oauth.has_no_session_limit(None)
+        assert not oauth.has_no_session_limit({})

@@ -1873,6 +1873,22 @@ class TestFleetScreen:
             # own segment; ordering is inside the bar, not a separate legend.
             assert "user2" in bars
 
+    async def test_long_account_list_drops_blank_lines(
+        self, tmp_path, fake_fleet_engine
+    ):
+        """Up to five accounts keep a blank line between them; past five the
+        spacing costs screen, so accounts sit back to back."""
+        for count, blank in ((5, True), (6, False)):
+            fake = FakeSwitcher(
+                [make_account(n, active=n == 1) for n in range(1, count + 1)],
+                tmp_path,
+            )
+            app = _fleet_app(fake)
+            async with app.run_test(size=(140, 60)) as pilot:
+                await settle(pilot)
+                accounts = self._text(app, "#fleet-accounts")
+                assert ("\n\n" in accounts) is blank
+
     async def test_active_without_session_limit_greys_the_5h_row(
         self, tmp_path, fake_fleet_engine
     ):

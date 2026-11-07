@@ -121,6 +121,16 @@ def _pace_marker(window: dict, fetched_at: float | None) -> str:
     return "  (ahead of pace)" if result and result.ahead else ""
 
 
+# Past this many accounts the blank line between them costs more screen than
+# it buys: the tree glyphs already mark where one account ends.
+COMPACT_ACCOUNTS_ABOVE = 5
+
+
+def compact_account_list(count: int) -> bool:
+    """Drop the blank line between accounts once the list gets long."""
+    return count > COMPACT_ACCOUNTS_ABOVE
+
+
 def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[str]:
     # Collect (label, body) rows first, then pad every label to the widest one so
     # per-model names (e.g. "Fable") don't shift the columns of the other lines.
@@ -5194,7 +5204,7 @@ class ClaudeAccountSwitcher:
             if show_token_status:
                 for line in self._token_status_lines(accounts_info[i]):
                     print(f"     {dimmed('•')} {muted(line)}")
-            if i < len(accounts_info) - 1:
+            if i < len(accounts_info) - 1 and not compact_account_list(len(accounts_info)):
                 print()
 
         # Safety copies (unclaimed credentials) are deliberately NOT surfaced

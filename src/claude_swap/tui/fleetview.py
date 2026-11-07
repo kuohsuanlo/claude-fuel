@@ -2088,7 +2088,7 @@ class FleetScreen(Screen):
         CLI should not have to learn a second one. The lines come from the
         same formatter the CLI prints, so the two can never drift.
         """
-        from claude_swap.switcher import _format_usage_lines
+        from claude_swap.switcher import _format_usage_lines, compact_account_list
 
         snapshot = self.app.snapshot
         target = self.query_one("#fleet-accounts", Static)
@@ -2097,11 +2097,13 @@ class FleetScreen(Screen):
             return
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append("Accounts:", style=f"bold {palette.foreground}")
+        compact = compact_account_list(len(snapshot.accounts))
         for index, account in enumerate(snapshot.accounts):
             # Blank line between accounts, exactly as `cfuel list` prints it:
             # three windows per account run together into an unreadable block
-            # without it.
-            text.append("\n\n" if index else "\n")
+            # without it — until the list is long enough that the spacing
+            # pushes accounts off the screen (same threshold as the CLI).
+            text.append("\n\n" if index and not compact else "\n")
             cursor = (
                 not self._armed
                 and self._selected is not None

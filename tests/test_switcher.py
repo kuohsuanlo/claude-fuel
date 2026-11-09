@@ -6362,28 +6362,22 @@ class TestFormatUsageLines:
         assert f"resets {expected_clock}" in line
         assert "stale-clock" not in line
 
-    def test_resets_line_sits_under_weekly(self):
+    def test_resets_ride_on_the_weekly_line(self):
+        from datetime import datetime, timedelta, timezone
+
+        later = (datetime.now(timezone.utc) + timedelta(days=119, hours=3)).isoformat()
         usage = {
             "seven_day": {"pct": 27.0},
-            "resets": {"left": 1, "expires_at": "2099-03-09T07:59:00+00:00"},
+            "resets": {"left": 1, "expires_at": later},
             "scoped": [{"name": "Fable", "pct": 0.0}],
         }
         lines = _format_usage_lines(usage)
-        assert lines[1].startswith("7d:")
-        assert lines[2].startswith("reset:   1    expires ")
-        assert "expiring soon" not in lines[2]
-        assert lines[3].startswith("Fable:")
-
-    def test_resets_about_to_expire_are_flagged(self):
-        from datetime import datetime, timedelta, timezone
-
-        soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
-        lines = _format_usage_lines({"resets": {"left": 2, "expires_at": soon}})
-        assert lines[-1].endswith("(expiring soon)")
+        assert len(lines) == 3  # 5h no limit, 7d, Fable — no extra row
+        assert lines[1].endswith("  · 1 resets (latest expires in 119 day)")
 
     def test_zero_resets_has_no_expiry(self):
-        lines = _format_usage_lines({"resets": {"left": 0, "expires_at": None}})
-        assert lines == ["reset:   0"]
+        lines = _format_usage_lines({"seven_day": {"pct": 1.0}, "resets": {"left": 0, "expires_at": None}})
+        assert lines[-1].endswith("  · 0 resets")
 
     def test_missing_five_hour_beside_weekly_reads_no_limit(self):
         """Plans without a session limit stop sending five_hour; saying so

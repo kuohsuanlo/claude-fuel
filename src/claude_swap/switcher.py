@@ -132,16 +132,19 @@ def compact_account_list(count: int) -> bool:
     return count > COMPACT_ACCOUNTS_ABOVE
 
 
-# A held reset this close to its expiry is about to be wasted.
-RESET_EXPIRY_WARN_S = 7 * 86400
-
-
-def _expires_within(iso: str, seconds: float) -> bool:
-    try:
-        when = datetime.fromisoformat(iso)
-    except (TypeError, ValueError):
-        return False
-    return (when - datetime.now(timezone.utc)).total_seconds() <= seconds
+def _resets_note(resets: object) -> str:
+    """``  · 1 resets (latest expires in 119 day)`` — empty with no reading."""
+    if not isinstance(resets, dict) or not isinstance(resets.get("left"), int):
+        return ""
+    note = f"  · {resets['left']} resets"
+    expires_at = resets.get("expires_at")
+    if resets["left"] and expires_at:
+        try:
+            left_s = (datetime.fromisoformat(expires_at) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            return note
+        note += f" (latest expires in {max(0, int(left_s // 86400))} day)"
+    return note
 
 
 def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[str]:
@@ -165,28 +168,15 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
         if w:
             # Pace only applies to the weekly (7d) window, never 5h (issue #125).
             marker = _pace_marker(w, fetched_at) if label == "7d" else ""
+            if label == "7d":
+                # Limit resets ride on the weekly line: a reset refills it.
+                marker += _resets_note(usage.get("resets"))
             cell = oauth.fresh_reset_strings(w)
             if cell:
                 countdown, clock = cell
                 rows.append((label, f"{w['pct']:>3.0f}%   resets {clock:<16}  in {countdown}{marker}"))
             else:
                 rows.append((label, f"{w['pct']:>3.0f}%{marker}"))
-    resets = usage.get("resets")
-    if isinstance(resets, dict) and isinstance(resets.get("left"), int):
-        # Limit resets this account holds, and when the soonest one is lost.
-        # Right under the weekly line because a reset is what refills it.
-        left = resets["left"]
-        cell = (
-            oauth.fresh_reset_strings({"resets_at": resets["expires_at"]})
-            if left and resets.get("expires_at")
-            else None
-        )
-        if cell:
-            countdown, clock = cell
-            soon = "  (expiring soon)" if _expires_within(resets["expires_at"], RESET_EXPIRY_WARN_S) else ""
-            rows.append(("reset", f"{left:>3}    expires {clock:<16} in {countdown}{soon}"))
-        else:
-            rows.append(("reset", f"{left:>3}"))
     for w in usage.get("scoped") or []:
         # Per-model weekly limits (e.g. Fable). Flag ones at/over the limit so a
         # maxed model — the usual reason to switch — stands out.

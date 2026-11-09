@@ -6362,6 +6362,29 @@ class TestFormatUsageLines:
         assert f"resets {expected_clock}" in line
         assert "stale-clock" not in line
 
+    def test_resets_line_sits_under_weekly(self):
+        usage = {
+            "seven_day": {"pct": 27.0},
+            "resets": {"left": 1, "expires_at": "2099-03-09T07:59:00+00:00"},
+            "scoped": [{"name": "Fable", "pct": 0.0}],
+        }
+        lines = _format_usage_lines(usage)
+        assert lines[1].startswith("7d:")
+        assert lines[2].startswith("reset:   1    expires ")
+        assert "expiring soon" not in lines[2]
+        assert lines[3].startswith("Fable:")
+
+    def test_resets_about_to_expire_are_flagged(self):
+        from datetime import datetime, timedelta, timezone
+
+        soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+        lines = _format_usage_lines({"resets": {"left": 2, "expires_at": soon}})
+        assert lines[-1].endswith("(expiring soon)")
+
+    def test_zero_resets_has_no_expiry(self):
+        lines = _format_usage_lines({"resets": {"left": 0, "expires_at": None}})
+        assert lines == ["reset:   0"]
+
     def test_missing_five_hour_beside_weekly_reads_no_limit(self):
         """Plans without a session limit stop sending five_hour; saying so
         beats a missing line, which reads as "not fetched"."""

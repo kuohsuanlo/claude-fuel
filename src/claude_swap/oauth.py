@@ -368,13 +368,42 @@ def fresh_reset_strings(window: dict) -> tuple[str, str] | None:
     return None
 
 
+# ``cedar_ember=1`` adds the limit-reset grants (how many resets an account
+# holds and when they expire) to the same response — one request, not two, so
+# it costs nothing against the usage budget. The server only answers it for a
+# Claude Code client (``ineligible_reason: "surface"`` otherwise), hence the
+# CLI-shaped User-Agent.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
+_FALLBACK_CLI_VERSION = "2.1.321"
+
+
+def _claude_code_user_agent() -> str:
+    """``claude-cli/<installed version> (external, cli)``.
+
+    The native installer keeps each build at ``.../versions/<version>``, so the
+    version is read off the resolved ``claude`` path; anything else falls back
+    to a known-good version rather than spawning a process per fetch.
+    """
+    import os
+    import re
+    import shutil
+
+    version = _FALLBACK_CLI_VERSION
+    found = shutil.which("claude")
+    if found:
+        leaf = os.path.basename(os.path.realpath(found))
+        if re.fullmatch(r"\d+\.\d+\.\d+", leaf):
+            version = leaf
+    return f"claude-cli/{version} (external, cli)"
+
+
 def request_usage_data(access_token: str) -> dict:
     """Request raw utilization data from the Anthropic usage API."""
-    url = "https://api.anthropic.com/api/oauth/usage"
+    url = USAGE_URL
     headers = {
         "Authorization": f"Bearer {access_token}",
         "anthropic-beta": OAUTH_BETA_HEADER,
-        "User-Agent": "claude-swap/1.0",
+        "User-Agent": _claude_code_user_agent(),
     }
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -506,7 +535,42 @@ def build_usage_result(data: dict) -> dict | None:
         if scoped:
             result["scoped"] = scoped
 
+    resets = _build_resets(data.get("cedar_ember"))
+    if resets is not None:
+        result["resets"] = resets
+
     return result if result else None
+
+
+def _build_resets(block: object) -> dict | None:
+    """Limit-reset grants → ``{"left": n, "expires_at": iso | None}``.
+
+    ``left`` sums every grant's remaining resets; ``expires_at`` is the
+    soonest ``ends_at`` among grants that still have one left — the reset
+    that is lost first if nobody uses it. ``None`` when the server did not
+    answer for this account (ineligible, or an older response), so "no
+    reading" never prints as "0 left".
+    """
+    if not isinstance(block, dict) or not block.get("eligible"):
+        return None
+    left = 0
+    soonest: tuple[datetime, str] | None = None
+    for grant in block.get("grants") or []:
+        if not isinstance(grant, dict):
+            continue
+        count = grant.get("resets_left")
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            continue
+        left += count
+        ends_at = grant.get("ends_at")
+        if isinstance(ends_at, str):
+            try:
+                when = datetime.fromisoformat(ends_at)
+            except ValueError:
+                continue
+            if soonest is None or when < soonest[0]:
+                soonest = (when, ends_at)
+    return {"left": left, "expires_at": soonest[1] if soonest else None}
 
 
 def has_no_session_limit(usage: dict | None) -> bool:

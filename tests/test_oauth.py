@@ -1511,3 +1511,34 @@ class TestHasNoSessionLimit:
     def test_nothing_measured_is_unknown_not_unlimited(self):
         assert not oauth.has_no_session_limit(None)
         assert not oauth.has_no_session_limit({})
+
+
+class TestLimitResets:
+    """``cedar_ember`` grants: how many limit resets an account holds."""
+
+    @staticmethod
+    def _data(grants, eligible=True):
+        return {
+            "seven_day": {"utilization": 10.0},
+            "cedar_ember": {"eligible": eligible, "grants": grants},
+        }
+
+    def test_counts_left_and_picks_soonest_expiry(self):
+        result = oauth.build_usage_result(self._data([
+            {"resets_left": 1, "ends_at": "2027-03-09T07:59:00+00:00"},
+            {"resets_left": 2, "ends_at": "2026-12-01T00:00:00+00:00"},
+            {"resets_left": 0, "ends_at": "2026-11-20T00:00:00+00:00"},
+        ]))
+        assert result["resets"] == {"left": 3, "expires_at": "2026-12-01T00:00:00+00:00"}
+
+    def test_eligible_with_none_left_reads_zero(self):
+        result = oauth.build_usage_result(self._data([]))
+        assert result["resets"] == {"left": 0, "expires_at": None}
+
+    def test_ineligible_is_no_reading_not_zero(self):
+        assert "resets" not in oauth.build_usage_result(self._data([], eligible=False))
+        assert "resets" not in oauth.build_usage_result({"seven_day": {"utilization": 1.0}})
+
+    def test_request_asks_for_resets_as_claude_code(self):
+        assert "cedar_ember=1" in oauth.USAGE_URL
+        assert oauth._claude_code_user_agent().startswith("claude-cli/")

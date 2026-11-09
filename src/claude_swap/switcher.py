@@ -13,6 +13,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from datetime import datetime, timezone
 
 from claude_swap import macos_keychain
 
@@ -131,6 +132,18 @@ def compact_account_list(count: int) -> bool:
     return count > COMPACT_ACCOUNTS_ABOVE
 
 
+# A held reset this close to its expiry is about to be wasted.
+RESET_EXPIRY_WARN_S = 7 * 86400
+
+
+def _expires_within(iso: str, seconds: float) -> bool:
+    try:
+        when = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return False
+    return (when - datetime.now(timezone.utc)).total_seconds() <= seconds
+
+
 def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[str]:
     # Collect (label, body) rows first, then pad every label to the widest one so
     # per-model names (e.g. "Fable") don't shift the columns of the other lines.
@@ -158,6 +171,22 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
                 rows.append((label, f"{w['pct']:>3.0f}%   resets {clock:<16}  in {countdown}{marker}"))
             else:
                 rows.append((label, f"{w['pct']:>3.0f}%{marker}"))
+    resets = usage.get("resets")
+    if isinstance(resets, dict) and isinstance(resets.get("left"), int):
+        # Limit resets this account holds, and when the soonest one is lost.
+        # Right under the weekly line because a reset is what refills it.
+        left = resets["left"]
+        cell = (
+            oauth.fresh_reset_strings({"resets_at": resets["expires_at"]})
+            if left and resets.get("expires_at")
+            else None
+        )
+        if cell:
+            countdown, clock = cell
+            soon = "  (expiring soon)" if _expires_within(resets["expires_at"], RESET_EXPIRY_WARN_S) else ""
+            rows.append(("reset", f"{left:>3}    expires {clock:<16} in {countdown}{soon}"))
+        else:
+            rows.append(("reset", f"{left:>3}"))
     for w in usage.get("scoped") or []:
         # Per-model weekly limits (e.g. Fable). Flag ones at/over the limit so a
         # maxed model — the usual reason to switch — stands out.

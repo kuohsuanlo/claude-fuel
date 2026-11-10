@@ -1523,6 +1523,18 @@ class TestLimitResets:
             "cedar_ember": {"eligible": eligible, "grants": grants},
         }
 
+    def test_fable_grants_are_counted_apart(self):
+        result = oauth.build_usage_result(self._data([
+            {"resets_left": 1, "ends_at": "2027-03-09T07:59:00+00:00", "gives_back_weekly": True},
+            {"resets_left": 2, "ends_at": "2026-12-01T00:00:00+00:00", "gives_back_weekly": False},
+        ]))
+        assert result["resets"] == {"left": 2, "expires_at": "2026-12-01T00:00:00+00:00"}
+        assert result["fable_resets"] == {"left": 1, "expires_at": "2027-03-09T07:59:00+00:00"}
+
+    def test_no_fable_grant_means_no_fable_reading(self):
+        result = oauth.build_usage_result(self._data([]))
+        assert "fable_resets" not in result
+
     def test_counts_left_and_picks_soonest_expiry(self):
         result = oauth.build_usage_result(self._data([
             {"resets_left": 1, "ends_at": "2027-03-09T07:59:00+00:00"},

@@ -132,11 +132,11 @@ def compact_account_list(count: int) -> bool:
     return count > COMPACT_ACCOUNTS_ABOVE
 
 
-def _resets_note(resets: object) -> str:
+def _resets_note(resets: object, kind: str = "") -> str:
     """``  · 1 resets (latest expires in 119 day)`` — empty with no reading."""
     if not isinstance(resets, dict) or not isinstance(resets.get("left"), int):
         return ""
-    note = f"  · {resets['left']} resets"
+    note = f"  · {resets['left']} {kind + ' ' if kind else ''}resets"
     expires_at = resets.get("expires_at")
     if resets["left"] and expires_at:
         try:
@@ -161,6 +161,11 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
             rows.append(("$$", f"{pct:>3.0f}%   resets {cell[1]:<16}  ${used:,.2f} / ${limit:,.2f}"))
         else:
             rows.append(("$$", f"{pct:>3.0f}%   ${used:,.2f} / ${limit:,.2f}"))
+    # Fable-only resets belong on the Fable line, not the account-wide one.
+    fable_row = any(
+        isinstance(w, dict) and str(w.get("name", "")).lower() == "fable"
+        for w in usage.get("scoped") or []
+    )
     if oauth.has_no_session_limit(usage):
         # Said rather than omitted: a missing 5h line reads as "not fetched".
         rows.append(("5h", "no limit"))
@@ -171,6 +176,9 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
             if label == "7d":
                 # Limit resets ride on the weekly line: a reset refills it.
                 marker += _resets_note(usage.get("resets"))
+                if not fable_row:
+                    # No Fable line to carry them: keep them here, named.
+                    marker += _resets_note(usage.get("fable_resets"), "Fable")
             cell = oauth.fresh_reset_strings(w)
             if cell:
                 countdown, clock = cell
@@ -181,6 +189,8 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
         # Per-model weekly limits (e.g. Fable). Flag ones at/over the limit so a
         # maxed model — the usual reason to switch — stands out.
         marker = "  (!)" if w["pct"] >= 100 else _pace_marker(w, fetched_at)
+        if str(w.get("name", "")).lower() == "fable":
+            marker += _resets_note(usage.get("fable_resets"))
         cell = oauth.fresh_reset_strings(w)
         if cell:
             countdown, clock = cell

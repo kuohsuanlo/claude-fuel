@@ -535,42 +535,66 @@ def build_usage_result(data: dict) -> dict | None:
         if scoped:
             result["scoped"] = scoped
 
-    resets = _build_resets(data.get("cedar_ember"))
-    if resets is not None:
-        result["resets"] = resets
+    general, fable = _build_resets(data.get("cedar_ember"))
+    if general is not None:
+        result["resets"] = general
+    if fable is not None:
+        result["fable_resets"] = fable
 
     return result if result else None
 
 
-def _build_resets(block: object) -> dict | None:
-    """Limit-reset grants → ``{"left": n, "expires_at": iso | None}``.
+def _is_fable_grant(grant: dict) -> bool:
+    """A Fable-only reset, by Claude Code's own rule: ``gives_back_weekly``.
 
-    ``left`` sums every grant's remaining resets; ``expires_at`` is the
-    soonest ``ends_at`` among grants that still have one left — the reset
-    that is lost first if nobody uses it. ``None`` when the server did not
-    answer for this account (ineligible, or an older response), so "no
-    reading" never prints as "0 left".
+    Claude Code classifies a grant as its "Fable reset" kind on exactly this
+    flag, before looking at ``type`` or ``clears``; everything else is a
+    5-hour / weekly / full reset of the account-wide limits.
+    """
+    return grant.get("gives_back_weekly") is True
+
+
+def _build_resets(block: object) -> tuple[dict | None, dict | None]:
+    """Limit-reset grants → ``(general, fable)``, each ``{"left", "expires_at"}``.
+
+    ``left`` sums the remaining resets; ``expires_at`` is the soonest
+    ``ends_at`` among grants that still have one left — the reset that is lost
+    first if nobody uses it. Fable-only grants are kept apart so they can be
+    shown on the Fable line rather than the account-wide weekly one.
+
+    ``general`` is ``None`` when the server did not answer for this account
+    (ineligible, or an older response), so "no reading" never prints as "0
+    left"; ``fable`` is ``None`` unless the account has a Fable grant at all.
     """
     if not isinstance(block, dict) or not block.get("eligible"):
-        return None
-    left = 0
-    soonest: tuple[datetime, str] | None = None
+        return None, None
+    buckets: dict[bool, dict] = {}
     for grant in block.get("grants") or []:
         if not isinstance(grant, dict):
             continue
+        bucket = buckets.setdefault(_is_fable_grant(grant), {"left": 0, "soonest": None})
         count = grant.get("resets_left")
         if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
             continue
-        left += count
+        bucket["left"] += count
         ends_at = grant.get("ends_at")
         if isinstance(ends_at, str):
             try:
                 when = datetime.fromisoformat(ends_at)
             except ValueError:
                 continue
-            if soonest is None or when < soonest[0]:
-                soonest = (when, ends_at)
-    return {"left": left, "expires_at": soonest[1] if soonest else None}
+            if bucket["soonest"] is None or when < bucket["soonest"][0]:
+                bucket["soonest"] = (when, ends_at)
+
+    def packed(bucket: dict | None) -> dict:
+        if bucket is None:
+            return {"left": 0, "expires_at": None}
+        soonest = bucket["soonest"]
+        return {"left": bucket["left"], "expires_at": soonest[1] if soonest else None}
+
+    general = packed(buckets.get(False))
+    fable = packed(buckets[True]) if True in buckets else None
+    return general, fable
 
 
 def has_no_session_limit(usage: dict | None) -> bool:

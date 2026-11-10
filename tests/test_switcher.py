@@ -6375,6 +6375,29 @@ class TestFormatUsageLines:
         assert len(lines) == 3  # 5h no limit, 7d, Fable — no extra row
         assert lines[1].endswith("  · 1 resets (latest expires in 119 day)")
 
+    def test_fable_resets_ride_on_the_fable_line(self):
+        from datetime import datetime, timedelta, timezone
+
+        later = (datetime.now(timezone.utc) + timedelta(days=119, hours=3)).isoformat()
+        usage = {
+            "seven_day": {"pct": 27.0},
+            "resets": {"left": 0, "expires_at": None},
+            "fable_resets": {"left": 1, "expires_at": later},
+            "scoped": [{"name": "Fable", "pct": 0.0}],
+        }
+        lines = _format_usage_lines(usage)
+        assert lines[1].endswith("  · 0 resets")
+        assert lines[2].startswith("Fable:")
+        assert lines[2].endswith("  · 1 resets (latest expires in 119 day)")
+
+    def test_fable_resets_without_a_fable_line_stay_on_weekly_named(self):
+        usage = {
+            "seven_day": {"pct": 27.0},
+            "resets": {"left": 0, "expires_at": None},
+            "fable_resets": {"left": 0, "expires_at": None},
+        }
+        assert _format_usage_lines(usage)[-1].endswith("  · 0 resets  · 0 Fable resets")
+
     def test_zero_resets_has_no_expiry(self):
         lines = _format_usage_lines({"seven_day": {"pct": 1.0}, "resets": {"left": 0, "expires_at": None}})
         assert lines[-1].endswith("  · 0 resets")

@@ -555,16 +555,16 @@ def _is_fable_grant(grant: dict) -> bool:
 
 
 def _build_resets(block: object) -> tuple[dict | None, dict | None]:
-    """Limit-reset grants → ``(general, fable)``, each ``{"left", "expires_at"}``.
+    """Limit-reset grants → ``(general, fable)``, each ``{"left", "expires"}``.
 
-    ``left`` sums the remaining resets; ``expires_at`` is the soonest
-    ``ends_at`` among grants that still have one left — the reset that is lost
-    first if nobody uses it. Fable-only grants are kept apart so they can be
-    shown on the Fable line rather than the account-wide weekly one.
+    ``left`` sums the remaining resets; ``expires`` lists the ``ends_at`` of
+    every grant that still has one left, soonest first — each is a reset lost
+    on that date if nobody uses it. Fable-only grants are kept apart so they
+    can be shown on the Fable line rather than the account-wide weekly one.
 
     ``general`` is ``None`` when the server did not answer for this account
-    (ineligible, or an older response), so "no reading" never prints as "0
-    left"; ``fable`` is ``None`` unless the account has a Fable grant at all.
+    (ineligible, or an older response); ``fable`` is ``None`` unless the
+    account has a Fable grant at all.
     """
     if not isinstance(block, dict) or not block.get("eligible"):
         return None, None
@@ -572,7 +572,7 @@ def _build_resets(block: object) -> tuple[dict | None, dict | None]:
     for grant in block.get("grants") or []:
         if not isinstance(grant, dict):
             continue
-        bucket = buckets.setdefault(_is_fable_grant(grant), {"left": 0, "soonest": None})
+        bucket = buckets.setdefault(_is_fable_grant(grant), {"left": 0, "ends": []})
         count = grant.get("resets_left")
         if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
             continue
@@ -580,17 +580,14 @@ def _build_resets(block: object) -> tuple[dict | None, dict | None]:
         ends_at = grant.get("ends_at")
         if isinstance(ends_at, str):
             try:
-                when = datetime.fromisoformat(ends_at)
+                bucket["ends"].append((datetime.fromisoformat(ends_at), ends_at))
             except ValueError:
-                continue
-            if bucket["soonest"] is None or when < bucket["soonest"][0]:
-                bucket["soonest"] = (when, ends_at)
+                pass
 
     def packed(bucket: dict | None) -> dict:
         if bucket is None:
-            return {"left": 0, "expires_at": None}
-        soonest = bucket["soonest"]
-        return {"left": bucket["left"], "expires_at": soonest[1] if soonest else None}
+            return {"left": 0, "expires": []}
+        return {"left": bucket["left"], "expires": [iso for _, iso in sorted(bucket["ends"])]}
 
     general = packed(buckets.get(False))
     fable = packed(buckets[True]) if True in buckets else None

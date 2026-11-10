@@ -133,17 +133,32 @@ def compact_account_list(count: int) -> bool:
 
 
 def _resets_note(resets: object, kind: str = "") -> str:
-    """``  · 1 resets (latest expires in 119 day)`` — empty with no reading."""
-    if not isinstance(resets, dict) or not isinstance(resets.get("left"), int):
+    """``  · 2 resets (expires in 119/195 day)`` — empty when none are held.
+
+    One day count per expiry date, soonest first; a reset with no reported
+    expiry just counts. ``expires_at`` is the single-date shape older
+    measurements were stored with.
+    """
+    if not isinstance(resets, dict):
         return ""
-    note = f"  · {resets['left']} {kind + ' ' if kind else ''}resets"
-    expires_at = resets.get("expires_at")
-    if resets["left"] and expires_at:
+    left = resets.get("left")
+    if not isinstance(left, int) or isinstance(left, bool) or left <= 0:
+        return ""
+    note = f"  · {left} {kind + ' ' if kind else ''}resets"
+    expires = resets.get("expires")
+    if not isinstance(expires, list):
+        expires = [resets["expires_at"]] if resets.get("expires_at") else []
+    now = datetime.now(timezone.utc)
+    days: list[int] = []
+    for iso in expires:
         try:
-            left_s = (datetime.fromisoformat(expires_at) - datetime.now(timezone.utc)).total_seconds()
+            day = max(0, int((datetime.fromisoformat(iso) - now).total_seconds() // 86400))
         except (TypeError, ValueError):
-            return note
-        note += f" (latest expires in {max(0, int(left_s // 86400))} day)"
+            continue
+        if day not in days:
+            days.append(day)
+    if days:
+        note += f" (expires in {'/'.join(str(d) for d in sorted(days))} day)"
     return note
 
 

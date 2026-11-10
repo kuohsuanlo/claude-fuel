@@ -1528,8 +1528,8 @@ class TestLimitResets:
             {"resets_left": 1, "ends_at": "2027-03-09T07:59:00+00:00", "gives_back_weekly": True},
             {"resets_left": 2, "ends_at": "2026-12-01T00:00:00+00:00", "gives_back_weekly": False},
         ]))
-        assert result["resets"] == {"left": 2, "expires_at": "2026-12-01T00:00:00+00:00"}
-        assert result["fable_resets"] == {"left": 1, "expires_at": "2027-03-09T07:59:00+00:00"}
+        assert result["resets"] == {"left": 2, "expires": ["2026-12-01T00:00:00+00:00"]}
+        assert result["fable_resets"] == {"left": 1, "expires": ["2027-03-09T07:59:00+00:00"]}
 
     def test_no_fable_grant_means_no_fable_reading(self):
         result = oauth.build_usage_result(self._data([]))
@@ -1541,11 +1541,14 @@ class TestLimitResets:
             {"resets_left": 2, "ends_at": "2026-12-01T00:00:00+00:00"},
             {"resets_left": 0, "ends_at": "2026-11-20T00:00:00+00:00"},
         ]))
-        assert result["resets"] == {"left": 3, "expires_at": "2026-12-01T00:00:00+00:00"}
+        assert result["resets"] == {
+            "left": 3,
+            "expires": ["2026-12-01T00:00:00+00:00", "2027-03-09T07:59:00+00:00"],
+        }
 
     def test_eligible_with_none_left_reads_zero(self):
         result = oauth.build_usage_result(self._data([]))
-        assert result["resets"] == {"left": 0, "expires_at": None}
+        assert result["resets"] == {"left": 0, "expires": []}
 
     def test_ineligible_is_no_reading_not_zero(self):
         assert "resets" not in oauth.build_usage_result(self._data([], eligible=False))

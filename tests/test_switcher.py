@@ -6362,45 +6362,59 @@ class TestFormatUsageLines:
         assert f"resets {expected_clock}" in line
         assert "stale-clock" not in line
 
-    def test_resets_ride_on_the_weekly_line(self):
+    @staticmethod
+    def _in_days(days):
         from datetime import datetime, timedelta, timezone
 
-        later = (datetime.now(timezone.utc) + timedelta(days=119, hours=3)).isoformat()
+        return (datetime.now(timezone.utc) + timedelta(days=days, hours=3)).isoformat()
+
+    def test_resets_ride_on_the_weekly_line(self):
         usage = {
             "seven_day": {"pct": 27.0},
-            "resets": {"left": 1, "expires_at": later},
+            "resets": {"left": 1, "expires": [self._in_days(119)]},
             "scoped": [{"name": "Fable", "pct": 0.0}],
         }
         lines = _format_usage_lines(usage)
         assert len(lines) == 3  # 5h no limit, 7d, Fable — no extra row
-        assert lines[1].endswith("  · 1 resets (latest expires in 119 day)")
+        assert lines[1].endswith("  · 1 resets (expires in 119 day)")
 
-    def test_fable_resets_ride_on_the_fable_line(self):
-        from datetime import datetime, timedelta, timezone
-
-        later = (datetime.now(timezone.utc) + timedelta(days=119, hours=3)).isoformat()
+    def test_several_expiries_list_each_day_soonest_first(self):
         usage = {
             "seven_day": {"pct": 27.0},
-            "resets": {"left": 0, "expires_at": None},
-            "fable_resets": {"left": 1, "expires_at": later},
+            "resets": {"left": 2, "expires": [self._in_days(119), self._in_days(195)]},
+        }
+        assert _format_usage_lines(usage)[-1].endswith("  · 2 resets (expires in 119/195 day)")
+
+    def test_fable_resets_ride_on_the_fable_line(self):
+        usage = {
+            "seven_day": {"pct": 27.0},
+            "resets": {"left": 0, "expires": []},
+            "fable_resets": {"left": 1, "expires": [self._in_days(119)]},
             "scoped": [{"name": "Fable", "pct": 0.0}],
         }
         lines = _format_usage_lines(usage)
-        assert lines[1].endswith("  · 0 resets")
+        assert "·" not in lines[1]  # no general resets: nothing on the 7d line
         assert lines[2].startswith("Fable:")
-        assert lines[2].endswith("  · 1 resets (latest expires in 119 day)")
+        assert lines[2].endswith("  · 1 resets (expires in 119 day)")
 
     def test_fable_resets_without_a_fable_line_stay_on_weekly_named(self):
         usage = {
             "seven_day": {"pct": 27.0},
-            "resets": {"left": 0, "expires_at": None},
-            "fable_resets": {"left": 0, "expires_at": None},
+            "fable_resets": {"left": 1, "expires": [self._in_days(119)]},
         }
-        assert _format_usage_lines(usage)[-1].endswith("  · 0 resets  · 0 Fable resets")
+        assert _format_usage_lines(usage)[-1].endswith("  · 1 Fable resets (expires in 119 day)")
 
-    def test_zero_resets_has_no_expiry(self):
-        lines = _format_usage_lines({"seven_day": {"pct": 1.0}, "resets": {"left": 0, "expires_at": None}})
-        assert lines[-1].endswith("  · 0 resets")
+    def test_no_resets_writes_nothing(self):
+        lines = _format_usage_lines({
+            "seven_day": {"pct": 1.0},
+            "resets": {"left": 0, "expires": []},
+            "fable_resets": {"left": 0, "expires": []},
+        })
+        assert lines == ["5h: no limit", "7d:   1%"]
+
+    def test_older_single_expiry_shape_still_reads(self):
+        usage = {"seven_day": {"pct": 1.0}, "resets": {"left": 1, "expires_at": self._in_days(119)}}
+        assert _format_usage_lines(usage)[-1].endswith("  · 1 resets (expires in 119 day)")
 
     def test_missing_five_hour_beside_weekly_reads_no_limit(self):
         """Plans without a session limit stop sending five_hour; saying so

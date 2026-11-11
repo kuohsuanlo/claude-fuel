@@ -3531,6 +3531,11 @@ class ClaudeAccountSwitcher:
             )
 
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+        # A run killed mid-login (SIGTERM skips ``finally``) leaves its
+        # throwaway profile behind; sweep this slot's leftovers first.
+        for leftover in self.backup_dir.glob(f"relogin-{account_num}-*"):
+            if leftover.is_dir():
+                shutil.rmtree(leftover, ignore_errors=True)
         workdir = Path(tempfile.mkdtemp(prefix=f"relogin-{account_num}-", dir=self.backup_dir))
         try:
             run_login = login or _run_claude_login

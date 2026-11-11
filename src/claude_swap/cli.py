@@ -1267,6 +1267,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         or args.remove_account is not None
         or args.disable_account is not None
         or args.enable_account is not None
+        or args.relogin_account is not None
         or args.switch_to is not None
         or args.export is not None
         or args.import_ is not None

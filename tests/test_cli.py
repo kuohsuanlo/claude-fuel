@@ -1592,3 +1592,19 @@ class TestOneCommandOnly:
                  patch("claude_swap.cli.main") as delegated:
                 cli.fleet_main()
             delegated.assert_called_once_with()
+
+
+def test_relogin_subcommand_dispatches(monkeypatch):
+    """`cfuel relogin 2` must reach relogin_account, not 'no command given'."""
+    import sys
+    from unittest.mock import patch
+
+    from claude_swap import cli
+
+    monkeypatch.setattr(sys, "argv", ["cfuel", "relogin", "2"])
+    with patch("claude_swap.cli.ClaudeAccountSwitcher") as cls:
+        try:
+            cli.main()
+        except SystemExit as e:
+            assert not e.code
+        cls.return_value.relogin_account.assert_called_once_with("2")

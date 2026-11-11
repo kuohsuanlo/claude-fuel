@@ -162,6 +162,20 @@ def _resets_note(resets: object, kind: str = "") -> str:
     return note
 
 
+def _run_claude_login(config_dir: str, email: str) -> int:
+    """``claude auth login`` into ``config_dir`` only; returns its exit code."""
+    import subprocess
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise ConfigError("claude not found on PATH")
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = config_dir
+    # A secure-storage override would point the login back at a real profile.
+    env.pop("CLAUDE_SECURESTORAGE_CONFIG_DIR", None)
+    return subprocess.call([claude_bin, "auth", "login", "--email", email], env=env)
+
+
 def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[str]:
     # Collect (label, body) rows first, then pad every label to the widest one so
     # per-model names (e.g. "Fable") don't shift the columns of the other lines.
@@ -257,7 +271,7 @@ SENTINEL_NOTES = {
     USAGE_FOREIGN_CREDENTIAL: "live credential belongs to another account — a switch repairs it",
     USAGE_API_KEY: "API key (no quota)",
     USAGE_KEYCHAIN_UNAVAILABLE: "keychain unavailable — locked or in use; try again",
-    USAGE_RELOGIN_REQUIRED: "re-login needed — refresh token dead; log in with Claude Code, then run: cfuel add",
+    USAGE_RELOGIN_REQUIRED: "re-login needed — refresh token dead; run: cfuel relogin <num> (keeps the active account)",
 }
 
 
@@ -3475,6 +3489,80 @@ class ClaudeAccountSwitcher:
         if migrate_from:
             print(f"{dimmed(f'Moved from slot {migrate_from} → {slot}')}")
         print(f"{accent('Added')} Account {account_num}: {current_email} {muted(f'[{tag}]')}")
+
+    def relogin_account(self, identifier: str, *, login=None) -> str:
+        """Log a stored account back in WITHOUT switching to it.
+
+        A dead refresh lineage ("re-login needed") used to need ``claude
+        /login`` in the default profile, which makes that account the live
+        one and cuts off every running session's working context. Here the
+        login runs in a throwaway ``CLAUDE_CONFIG_DIR``, so ``~/.claude`` and
+        the active account are never touched; only the target slot's stored
+        credential is replaced, and its dead-token quarantine lifted.
+
+        The login must come back as the SAME account (email, and org when
+        both sides know it): filing another account's token under this slot
+        is exactly the mismatch the capture paths exist to prevent, so a
+        mismatch changes nothing. ``login`` is injectable for tests; it gets
+        ``(config_dir, email)`` and returns the login's exit code.
+
+        Returns the slot number.
+        """
+        import tempfile
+
+        from claude_swap.session import (
+            delete_macos_keychain_entry,
+            read_config_dir_credentials,
+            read_session_identity,
+        )
+
+        account_num, email, org_uuid = self.resolve_account(identifier)
+        record = (self._get_sequence_data() or {}).get("accounts", {}).get(account_num) or {}
+        if record.get("kind") == "api_key" or email.endswith("@token.local"):
+            raise ConfigError(
+                f"Account {account_num} is a token account; register a new "
+                "token with: cfuel add-token"
+            )
+        active = (self._get_sequence_data() or {}).get("activeAccountNumber")
+        if active is not None and str(active) == account_num:
+            raise ConfigError(
+                f"Account {account_num} is the active account; run /login "
+                "inside Claude Code, then: cfuel add"
+            )
+
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        workdir = Path(tempfile.mkdtemp(prefix=f"relogin-{account_num}-", dir=self.backup_dir))
+        try:
+            run_login = login or _run_claude_login
+            print(f"Logging in {email} in a separate profile — the active account is not touched.")
+            code = run_login(str(workdir), email)
+            if code != 0:
+                raise ConfigError("Login did not complete; nothing was changed.")
+            identity = read_session_identity(workdir)
+            if identity is None:
+                raise ConfigError("Login finished but no account was recorded; nothing was changed.")
+            got_email, got_org = identity
+            if got_email.lower() != email.lower() or (org_uuid and got_org and got_org != org_uuid):
+                raise ValidationError(
+                    f"Logged in as {got_email}, not {email}; nothing was changed. "
+                    f"Run again and sign in as {email}."
+                )
+            creds = read_config_dir_credentials(str(workdir), strict_keychain=True)
+            data = oauth.extract_oauth_data(creds or "")
+            if not data or not data.get("refreshToken"):
+                raise CredentialReadError("Login finished but left no usable credential; nothing was changed.")
+            with FileLock(self.lock_file):
+                self._write_account_credentials(account_num, email, creds)
+            self._usage_store.clear_dead_token([account_num], {account_num: (email, org_uuid)})
+            self._logger.info("Re-logged account %s (%s) without switching", account_num, email)
+            print(f"{accent('Re-logged in')} Account {account_num} ({email}); active account unchanged.")
+            return account_num
+        finally:
+            try:
+                delete_macos_keychain_entry(workdir)
+            except Exception:  # best-effort: the profile is being thrown away
+                pass
+            shutil.rmtree(workdir, ignore_errors=True)
 
     def add_account_from_token(
         self,

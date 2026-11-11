@@ -2125,7 +2125,7 @@ class FleetScreen(Screen):
             # the tool cannot perform, so it has to be asked for here.
             if self._token_dead(account):
                 text.append(
-                    "  re-login needed → claude /login, then: cfuel add",
+                    f"  re-login needed → cfuel relogin {account.number}",
                     style=f"bold {palette.sev_crit}",
                 )
             expiry = self._token_expiry_note(account, palette)

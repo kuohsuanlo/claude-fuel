@@ -581,6 +581,64 @@ class TestAddAccountRefresh:
         assert "new-token" in stored["creds"]
 
 
+class TestReloginAccount:
+    """`cfuel relogin`: refresh a stored account's login without switching."""
+
+    @staticmethod
+    def _switcher(sample_sequence_data):
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._write_json(switcher.sequence_file, sample_sequence_data)
+        return switcher
+
+    @staticmethod
+    def _login_as(email, refresh="rt-new"):
+        def login(config_dir, wanted):
+            d = Path(config_dir)
+            (d / ".claude.json").write_text(json.dumps({"oauthAccount": {"emailAddress": email}}))
+            (d / ".credentials.json").write_text(json.dumps(
+                {"claudeAiOauth": {"accessToken": "at-new", "refreshToken": refresh}}
+            ))
+            login.seen = (config_dir, wanted)
+            return 0
+        return login
+
+    def test_writes_only_the_target_slot_and_keeps_active(
+        self, temp_home: Path, sample_sequence_data: dict
+    ):
+        switcher = self._switcher(sample_sequence_data)
+        written = {}
+        login = self._login_as("account2@example.com")
+        with patch.object(switcher, "_write_account_credentials",
+                          side_effect=lambda n, e, c: written.update({n: c})), \
+             patch.object(switcher._usage_store, "clear_dead_token") as cleared:
+            assert switcher.relogin_account("2", login=login) == "2"
+        assert list(written) == ["2"] and "rt-new" in written["2"]
+        cleared.assert_called_once()
+        assert switcher._get_sequence_data()["activeAccountNumber"] == 1
+        assert login.seen[1] == "account2@example.com"
+        assert not Path(login.seen[0]).exists()  # throwaway profile removed
+
+    def test_wrong_account_changes_nothing(self, temp_home: Path, sample_sequence_data: dict):
+        switcher = self._switcher(sample_sequence_data)
+        with patch.object(switcher, "_write_account_credentials") as write, \
+             pytest.raises(ValidationError, match="not account2@example.com"):
+            switcher.relogin_account("2", login=self._login_as("someone@else.com"))
+        write.assert_not_called()
+
+    def test_failed_login_changes_nothing(self, temp_home: Path, sample_sequence_data: dict):
+        switcher = self._switcher(sample_sequence_data)
+        with patch.object(switcher, "_write_account_credentials") as write, \
+             pytest.raises(ConfigError, match="did not complete"):
+            switcher.relogin_account("2", login=lambda d, e: 1)
+        write.assert_not_called()
+
+    def test_active_account_is_refused(self, temp_home: Path, sample_sequence_data: dict):
+        switcher = self._switcher(sample_sequence_data)
+        with pytest.raises(ConfigError, match="active account"):
+            switcher.relogin_account("1", login=self._login_as("account1@example.com"))
+
+
 class TestGetNextAccountNumber:
     """Test getting next account number."""
 

@@ -58,6 +58,7 @@ _SUBCOMMAND_FLAGS = {
     "rm": "--remove-account",
     "disable": "--disable-account",
     "enable": "--enable-account",
+    "relogin": "--relogin-account",
     "export": "--export",
     "import": "--import",
     "purge": "--purge",
@@ -1024,6 +1025,7 @@ Commands:
   %(prog)s switch <num|email>         switch to a specific account
   %(prog)s add                        add the current account
   %(prog)s add-token [TOKEN|-]        register a setup-token or API key
+  %(prog)s relogin <num|email>        log an account back in, without switching to it
   %(prog)s remove <num|email>         remove an account
   %(prog)s disable <num|email>        hold an account out of auto-rotation
   %(prog)s enable <num|email>         return a disabled account to rotation
@@ -1169,6 +1171,11 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     )
     group.add_argument(
         "--disable-account",
+        metavar="NUM|EMAIL",
+        help=argparse.SUPPRESS,
+    )
+    group.add_argument(
+        "--relogin-account",
         metavar="NUM|EMAIL",
         help=argparse.SUPPRESS,
     )
@@ -1346,6 +1353,8 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
             switcher.remove_account(args.remove_account)
         elif args.disable_account is not None:
             switcher.set_account_disabled(args.disable_account, True)
+        elif args.relogin_account is not None:
+            switcher.relogin_account(args.relogin_account)
         elif args.enable_account is not None:
             switcher.set_account_disabled(args.enable_account, False)
         elif args.list:
